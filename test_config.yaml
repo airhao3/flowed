@@ -1,0 +1,86 @@
+# Logging configuration
+logging:
+  level: "DEBUG"
+  file: "logs/flowed_test.log"
+  max_size: 10
+  backup_count: 5
+  structured: false
+  console: true
+
+# Data collection configuration
+data:
+  source: "pcap"
+  pcap:
+    input_dir: "data/raw"
+    file_pattern: "*.pcap*"
+
+# Data ingestion configuration
+data_ingestion:
+  processors:
+    pcap:
+      display_filter: "tcp or udp"
+      max_packets: 20000
+      batch_size: 1000
+      skip_malformed: true
+      min_packet_size: 14
+      max_packet_size: 65535
+
+# Feature extraction configuration
+features:
+  basic: true
+  ip:
+    convert_to_int: true
+    extract_private: true
+  calculators:
+    flow:
+      enabled: true
+    host:
+      enabled: true
+    packet:
+      enabled: true
+    http:
+      enabled: true
+    dns:
+      enabled: true
+    tls:
+      enabled: true
+    ssh:
+      enabled: true
+    sql:
+      enabled: true
+
+# Model configuration
+model:
+  type: "isolation_forest"
+  name: "isolation_forest_model"
+  save_dir: "data/models"
+  threshold: 0.65
+  params:
+    n_estimators: 100
+    max_samples: 'auto'
+    contamination: 0.05
+    random_state: 42
+  train:
+    force_retrain: true
+    min_samples: 200
+    validation_split: 0.1
+
+# Output configuration
+output:
+  report_dir: "data/reports"
+  processed_data_dir: "data/processed"
+  save_processed_data: true
+
+# Visualization configuration
+visualization:
+  output_dir: "data/reports"
+  plots:
+    traffic_volume: true
+    protocol_distribution: true
+    top_talkers: true
+    anomaly_scores: true
+  report:
+    template: "default"
+    include_summary: true
+    include_anomalies: true
+    include_visualizations: true

@@ -1,0 +1,189 @@
+
+        <html>
+        <head>
+            <title>Traffic Analysis Report: report_test_20250715_154807</title>
+            <style>
+                body { font-family: sans-serif; margin: 2em; }
+                h1, h2 { color: #333; }
+                table { border-collapse: collapse; width: 80%; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+                .summary { background-color: #e7f3fe; border-left: 6px solid #2196F3; padding: 10px; margin-bottom: 20px; }
+            </style>
+        </head>
+        <body>
+            <h1>Traffic Anomaly Detection Report</h1>
+            <h2>Summary for report_test_20250715_154807.pcap</h2>
+            <div class="summary">
+                <p><b>Total Packets Analyzed:</b> 298</p>
+                <p><b>Anomalies Detected:</b> 3</p>
+                <p><b>Anomaly Ratio:</b> 1.01%</p>
+            </div>
+
+            <h2>Detected Anomalies (3 found)</h2>
+            <h3>Anomaly Interpretation</h3><p>The detected anomalies exhibit the following characteristics, which distinguish them from normal traffic:</p><ul><li><b>Extremely Short Flow Duration:</b> Some flows were completed in microseconds or nanoseconds. This is highly unusual and results in calculated data rates that are physically impossible, marking them as statistical outliers.</li><li><b>Astronomical Data Rates:</b> The calculated data rates (bytes/sec) are exceedingly high. This is a direct consequence of the extremely short flow durations and is a strong indicator of an anomaly.</li><li><b>High Packet Count from a Single Host:</b> Certain source IPs generated a very high number of packets in a short time window, which could be indicative of scanning behavior or a data burst.</li></ul><p><b>Conclusion:</b> These events are flagged as anomalies primarily due to their extreme statistical properties, particularly related to timing and calculated rates, rather than specific malicious content. This could point to data processing artifacts, network configuration issues, or genuine but rare network events.</p>
+            <table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>timestamp</th>
+      <th>frame_len</th>
+      <th>protocol</th>
+      <th>src_ip</th>
+      <th>dst_ip</th>
+      <th>ip_version</th>
+      <th>ip_ttl</th>
+      <th>ip_len</th>
+      <th>src_port</th>
+      <th>dst_port</th>
+      <th>tcp_flags</th>
+      <th>tcp_window_size</th>
+      <th>tcp_ack</th>
+      <th>tcp_seq</th>
+      <th>flow_pkt_count</th>
+      <th>flow_byte_count</th>
+      <th>flow_mean_pkt_size</th>
+      <th>flow_std_pkt_size</th>
+      <th>flow_start_time</th>
+      <th>flow_end_time</th>
+      <th>flow_duration_seconds</th>
+      <th>flow_pkts_per_sec</th>
+      <th>flow_bytes_per_sec</th>
+      <th>src_host_pkt_count_win</th>
+      <th>src_host_byte_count_win</th>
+      <th>src_host_distinct_dst_ips_win</th>
+      <th>src_host_distinct_dst_ports_win</th>
+      <th>dst_host_pkt_count_win</th>
+      <th>dst_host_byte_count_win</th>
+      <th>dst_host_distinct_src_ips_win</th>
+      <th>tcp_flag_fin</th>
+      <th>tcp_flag_syn</th>
+      <th>tcp_flag_rst</th>
+      <th>tcp_flag_psh</th>
+      <th>tcp_flag_ack</th>
+      <th>tcp_flag_urg</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>114</th>
+      <td>1970-01-01 00:00:01.752562177</td>
+      <td>1172</td>
+      <td>TLS</td>
+      <td>172.19.102.28</td>
+      <td>140.82.114.21</td>
+      <td>4.0</td>
+      <td>63.0</td>
+      <td>1158.0</td>
+      <td>34832</td>
+      <td>443</td>
+      <td>24.0</td>
+      <td>2048.0</td>
+      <td>1.0</td>
+      <td>5697.0</td>
+      <td>6.0</td>
+      <td>8337.0</td>
+      <td>1389.5</td>
+      <td>156.043263</td>
+      <td>1970-01-01 00:00:01.752562177</td>
+      <td>1970-01-01 00:00:01.752562180</td>
+      <td>3.000000e-09</td>
+      <td>5.982054e+06</td>
+      <td>8.312064e+09</td>
+      <td>158.0</td>
+      <td>72094.0</td>
+      <td>14.0</td>
+      <td>5.0</td>
+      <td>38.0</td>
+      <td>48897.0</td>
+      <td>1.0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>1</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>252</th>
+      <td>1970-01-01 00:00:01.752562180</td>
+      <td>1205</td>
+      <td>TLS</td>
+      <td>172.19.102.28</td>
+      <td>140.82.114.21</td>
+      <td>4.0</td>
+      <td>63.0</td>
+      <td>1191.0</td>
+      <td>34832</td>
+      <td>443</td>
+      <td>24.0</td>
+      <td>2048.0</td>
+      <td>510.0</td>
+      <td>45251.0</td>
+      <td>6.0</td>
+      <td>8337.0</td>
+      <td>1389.5</td>
+      <td>156.043263</td>
+      <td>1970-01-01 00:00:01.752562177</td>
+      <td>1970-01-01 00:00:01.752562180</td>
+      <td>3.000000e-09</td>
+      <td>5.982054e+06</td>
+      <td>8.312064e+09</td>
+      <td>158.0</td>
+      <td>72094.0</td>
+      <td>14.0</td>
+      <td>5.0</td>
+      <td>38.0</td>
+      <td>48897.0</td>
+      <td>1.0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>1</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>295</th>
+      <td>1970-01-01 00:00:01.752562181</td>
+      <td>66</td>
+      <td>TCP</td>
+      <td>172.19.102.28</td>
+      <td>140.82.114.21</td>
+      <td>4.0</td>
+      <td>63.0</td>
+      <td>52.0</td>
+      <td>34832</td>
+      <td>443</td>
+      <td>16.0</td>
+      <td>2040.0</td>
+      <td>1067.0</td>
+      <td>46390.0</td>
+      <td>32.0</td>
+      <td>40560.0</td>
+      <td>1267.5</td>
+      <td>525.316494</td>
+      <td>1970-01-01 00:00:01.752562177</td>
+      <td>1970-01-01 00:00:01.752562181</td>
+      <td>4.000000e-09</td>
+      <td>3.187251e+07</td>
+      <td>4.039841e+10</td>
+      <td>158.0</td>
+      <td>72094.0</td>
+      <td>14.0</td>
+      <td>5.0</td>
+      <td>38.0</td>
+      <td>48897.0</td>
+      <td>1.0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+        </body>
+        </html>
+        

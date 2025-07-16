@@ -1,0 +1,226 @@
+
+        <html>
+        <head>
+            <title>Traffic Analysis Report: report_test_20250715_161744</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 2em; background-color: #f9fafb; }
+                h1, h2, h3, h4 { color: #111827; }
+                h1 { font-size: 2em; }
+                h2 { border-bottom: 2px solid #e5e7eb; padding-bottom: 10px; margin-top: 40px;}
+                .summary, .section, .connection-card { background-color: #ffffff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+                .summary p { margin: 0.5em 0; }
+                .local-ip { font-weight: bold; color: #2563eb; }
+                
+                /* New styles for connection cards */
+                .connections-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
+                .connection-card { display: flex; flex-direction: column; }
+                .connection-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+                .connection-target { font-size: 1.1em; font-weight: bold; }
+                .risk-badge { padding: 4px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; color: white; }
+                .risk-low { background-color: #10b981; }
+                .risk-high { background-color: #ef4444; }
+                
+                .traffic-stats { margin-bottom: 15px; }
+                .traffic-stats .stat { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #f3f4f6; }
+                .traffic-stats .stat:last-child { border-bottom: none; }
+                .traffic-stats .stat-label { color: #6b7280; }
+                .traffic-stats .stat-value { font-weight: 500; }
+                
+                .protocol-list { list-style: none; padding: 0; margin: 0; }
+                .protocol-list li { background-color: #f3f4f6; color: #374151; padding: 3px 8px; border-radius: 12px; display: inline-block; margin-right: 5px; margin-bottom: 5px; font-size: 0.9em; }
+
+                table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+            </style>
+        </head>
+        <body>
+            <h1>Traffic Anomaly Detection Report</h1>
+            <h2>Summary for report_test_20250715_161744.pcap</h2>
+            <div class="summary">
+                <p><b>Total Packets Analyzed:</b> 298</p>
+                <p><b>Anomalies Detected:</b> 3</p>
+                <p><b>Anomaly Ratio:</b> 1.01%</p>
+            </div>
+
+            <div class="traffic-analysis">
+                <h2>Traffic Analysis</h2>
+                <div class='section'><p>No local IPs configured for detailed analysis.</p></div>
+            </div>
+
+            <h2>Detected Anomalies (3 found)</h2>
+            <h3>Anomaly Interpretation</h3><p>The detected anomalies exhibit the following characteristics, which distinguish them from normal traffic:</p><ul><li><b>Extremely Short Flow Duration:</b> Some flows were completed in microseconds or nanoseconds. This is highly unusual and results in calculated data rates that are physically impossible, marking them as statistical outliers.</li><li><b>Astronomical Data Rates:</b> The calculated data rates (bytes/sec) are exceedingly high. This is a direct consequence of the extremely short flow durations and is a strong indicator of an anomaly.</li><li><b>High Packet Count from a Single Host:</b> Certain source IPs generated a very high number of packets in a short time window, which could be indicative of scanning behavior or a data burst.</li></ul><p><b>Conclusion:</b> These events are flagged as anomalies primarily due to their extreme statistical properties, 
+        particularly related to timing and calculated rates, rather than specific malicious content. This could point to data processing artifacts, 
+        network configuration issues, or genuine but rare network events.</p>
+
+        <p>For a deeper dive, please examine the detailed anomaly table below. The features that most significantly contributed to the anomaly score are highlighted.</p>
+
+        <p><b>Note:</b> The term 'anomaly' does not necessarily imply malicious activity but rather a deviation from the established baseline of 'normal' traffic. 
+        Further investigation is often required to determine the root cause.</p>
+        
+        <p><i>This automated analysis provides a high-level overview. For critical systems, always correlate these findings with other security logs and contextual information.</i></p>
+            <table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>timestamp</th>
+      <th>frame_len</th>
+      <th>protocol</th>
+      <th>src_ip</th>
+      <th>dst_ip</th>
+      <th>ip_version</th>
+      <th>ip_ttl</th>
+      <th>ip_len</th>
+      <th>src_port</th>
+      <th>dst_port</th>
+      <th>tcp_flags</th>
+      <th>tcp_window_size</th>
+      <th>tcp_ack</th>
+      <th>tcp_seq</th>
+      <th>flow_pkt_count</th>
+      <th>flow_byte_count</th>
+      <th>flow_mean_pkt_size</th>
+      <th>flow_std_pkt_size</th>
+      <th>flow_start_time</th>
+      <th>flow_end_time</th>
+      <th>flow_duration_seconds</th>
+      <th>flow_pkts_per_sec</th>
+      <th>flow_bytes_per_sec</th>
+      <th>src_host_pkt_count_win</th>
+      <th>src_host_byte_count_win</th>
+      <th>src_host_distinct_dst_ips_win</th>
+      <th>src_host_distinct_dst_ports_win</th>
+      <th>dst_host_pkt_count_win</th>
+      <th>dst_host_byte_count_win</th>
+      <th>dst_host_distinct_src_ips_win</th>
+      <th>tcp_flag_fin</th>
+      <th>tcp_flag_syn</th>
+      <th>tcp_flag_rst</th>
+      <th>tcp_flag_psh</th>
+      <th>tcp_flag_ack</th>
+      <th>tcp_flag_urg</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>114</th>
+      <td>1970-01-01 00:00:01.752562177</td>
+      <td>1172</td>
+      <td>TLS</td>
+      <td>172.19.102.28</td>
+      <td>140.82.114.21</td>
+      <td>4.0</td>
+      <td>63.0</td>
+      <td>1158.0</td>
+      <td>34832</td>
+      <td>443</td>
+      <td>24.0</td>
+      <td>2048.0</td>
+      <td>1.0</td>
+      <td>5697.0</td>
+      <td>6.0</td>
+      <td>8337.0</td>
+      <td>1389.5</td>
+      <td>156.043263</td>
+      <td>1970-01-01 00:00:01.752562177</td>
+      <td>1970-01-01 00:00:01.752562180</td>
+      <td>3.000000e-09</td>
+      <td>5.982054e+06</td>
+      <td>8.312064e+09</td>
+      <td>158.0</td>
+      <td>72094.0</td>
+      <td>14.0</td>
+      <td>5.0</td>
+      <td>38.0</td>
+      <td>48897.0</td>
+      <td>1.0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>1</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>252</th>
+      <td>1970-01-01 00:00:01.752562180</td>
+      <td>1205</td>
+      <td>TLS</td>
+      <td>172.19.102.28</td>
+      <td>140.82.114.21</td>
+      <td>4.0</td>
+      <td>63.0</td>
+      <td>1191.0</td>
+      <td>34832</td>
+      <td>443</td>
+      <td>24.0</td>
+      <td>2048.0</td>
+      <td>510.0</td>
+      <td>45251.0</td>
+      <td>6.0</td>
+      <td>8337.0</td>
+      <td>1389.5</td>
+      <td>156.043263</td>
+      <td>1970-01-01 00:00:01.752562177</td>
+      <td>1970-01-01 00:00:01.752562180</td>
+      <td>3.000000e-09</td>
+      <td>5.982054e+06</td>
+      <td>8.312064e+09</td>
+      <td>158.0</td>
+      <td>72094.0</td>
+      <td>14.0</td>
+      <td>5.0</td>
+      <td>38.0</td>
+      <td>48897.0</td>
+      <td>1.0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>1</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>295</th>
+      <td>1970-01-01 00:00:01.752562181</td>
+      <td>66</td>
+      <td>TCP</td>
+      <td>172.19.102.28</td>
+      <td>140.82.114.21</td>
+      <td>4.0</td>
+      <td>63.0</td>
+      <td>52.0</td>
+      <td>34832</td>
+      <td>443</td>
+      <td>16.0</td>
+      <td>2040.0</td>
+      <td>1067.0</td>
+      <td>46390.0</td>
+      <td>32.0</td>
+      <td>40560.0</td>
+      <td>1267.5</td>
+      <td>525.316494</td>
+      <td>1970-01-01 00:00:01.752562177</td>
+      <td>1970-01-01 00:00:01.752562181</td>
+      <td>4.000000e-09</td>
+      <td>3.187251e+07</td>
+      <td>4.039841e+10</td>
+      <td>158.0</td>
+      <td>72094.0</td>
+      <td>14.0</td>
+      <td>5.0</td>
+      <td>38.0</td>
+      <td>48897.0</td>
+      <td>1.0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>0</td>
+      <td>1</td>
+      <td>0</td>
+    </tr>
+  </tbody>
+</table>
+        </body>
+        </html>
+        

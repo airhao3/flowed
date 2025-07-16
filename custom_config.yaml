@@ -1,0 +1,49 @@
+# 自定义PCAP处理配置
+logging:
+  level: "DEBUG"  # 启用详细日志
+
+data:
+  source: "pcap"
+  pcap:
+    input_dir: "data/raw"
+    file_pattern: "*.pcap*"  # 支持 .pcap 和 .pcapng
+
+# 数据摄取配置
+data_ingestion:
+  processors:
+    pcap:
+      # 过滤器：只处理TCP和UDP流量
+      display_filter: "tcp or udp"
+      # 限制每个文件处理的包数量（避免内存问题）
+      max_packets: 50000
+
+# 特征提取配置
+features:
+  basic: true
+  calculators:
+    packet: 
+      enabled: true    # 包级特征（TCP标志位等）
+    flow:
+      enabled: true    # 流级特征（持续时间、速率等）
+    host:
+      enabled: true    # 主机级特征（连接模式等）
+    http:
+      enabled: true    # HTTP协议特征
+    ssh:
+      enabled: true    # SSH协议特征
+    sql:
+      enabled: true    # SQL协议特征
+
+# 异常检测模型配置
+model:
+  type: "isolation_forest"
+  params:
+    contamination: 0.05  # 预期异常比例（5%）
+    random_state: 42
+  save_dir: "data/models"
+
+# 可视化配置
+visualization:
+  enable: true
+  output_dir: "data/reports"
+  format: "html"

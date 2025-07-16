@@ -1,0 +1,147 @@
+# Logging configuration
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  # --- Standard Text Log --- 
+  file: "logs/flowed.log"
+  max_size: 10  # MB
+  backup_count: 5
+  # --- Structured JSON Log ---
+  structured: true # Set to true to enable JSON logging
+  json_file: "logs/flowed.json.log"
+
+# Data collection configuration
+data:
+  # Source can be 'pcap' or 'arkime'
+  source: "pcap"
+
+  # PCAP file-based collection (disabled)
+  pcap:
+    input_dir: "data/raw"
+    file_pattern: "*.pcap*"
+
+  # Arkime API based collection
+  arkime:
+    url: "https://172.17.251.37/arkime/api/connections/csv"
+    # Use the same 'Authorization: Basic ...' value from your curl command
+    auth_header: "Basic YWRtaW46c2VwY0AxMjMuY29t"
+    verify_ssl: false
+
+# Data ingestion configuration
+data_ingestion:
+  # Configuration for specific processors
+  processors:
+    pcap:
+      # pyshark display filter
+      display_filter: "tcp or udp"
+      # Max packets to read from a single pcap file
+      max_packets: 50000
+      # Process by time windows instead of packet count
+      time_window_seconds: 300  # 5 minutes
+      # Skip malformed packets instead of failing
+      skip_malformed: true
+      # Memory management
+      batch_size: 1000
+      # Quality checks
+      min_packet_size: 14  # Minimum Ethernet frame size
+      max_packet_size: 65535  # Maximum IP packet size
+
+# Data Enrichment configuration
+enrichment:
+  enabled: false
+  cache_dir: "data/cache"
+  enrichers:
+    geoip:
+      enabled: false # Disabled in favor of ipregistry
+      db_path: "data/geodb/GeoLite2-City.mmdb"
+
+    ipregistry:
+      enabled: false
+      # Get your free API key from https://ipregistry.co
+      api_key: "YOUR_API_KEY_HERE"
+      # Cache TTL for API results in seconds (default: 1 day)
+      ttl_seconds: 86400
+
+# Feature extraction configuration
+features:
+  basic: true
+  ip:
+    convert_to_int: true
+    extract_private: true
+  calculators:
+    packet:
+      enabled: true
+    flow:
+      enabled: true
+    host:
+      enabled: true
+    http:
+      enabled: true
+    ssh:
+      enabled: true
+    sql:
+      enabled: true
+  tcp:
+    extract_flags: true
+    extract_timing: true
+  # Parameters for specific calculators
+  http_params:
+    common_methods:
+      - GET
+      - POST
+      - HEAD
+      - PUT
+      - DELETE
+      - OPTIONS
+      - CONNECT
+  sql_params:
+    suspicious_keywords:
+      - 'union select'
+      - 'drop table'
+      - 'xp_cmdshell'
+      - '--'
+      - ';'
+      - 'insert into'
+      - 'update set'
+      - 'delete from'
+      - '1=1'
+
+# Model configuration
+model:
+  type: "isolation_forest"  # isolation_forest, one_class_svm, lof
+  params:
+    contamination: 0.05  # More realistic proportion of outliers (5%)
+    n_estimators: 200    # Increase trees for better stability
+    max_samples: 0.8     # Use 80% of samples for each tree
+    random_state: 42
+    bootstrap: false     # Don't bootstrap samples
+    n_jobs: -1          # Use all available cores
+  train:
+    test_size: 0.2
+    validation_split: 0.1  # Add validation set
+    min_samples: 1000      # Minimum samples required for training
+  save_dir: "data/models"
+  threshold: 0.9  # Anomaly score threshold
+  performance_monitoring:
+    enabled: true
+    drift_detection: true
+    retraining_threshold: 0.1  # Retrain if performance drops by 10%
+
+# Visualization configuration
+visualization:
+  enable: true
+  output_dir: "data/reports"
+  format: "html"  # html, png, pdf
+  show: false  # Show plots interactively
+
+# Alerting configuration (optional)
+alerting:
+  enabled: false
+  email:
+    smtp_server: "smtp.example.com"
+    smtp_port: 587
+    username: "user@example.com"
+    password: "your-password"
+    recipients: ["admin@example.com"]
+  slack:
+    webhook_url: "https://hooks.slack.com/services/..."
+    channel: "#alerts"

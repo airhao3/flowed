@@ -1,0 +1,26 @@
+{
+  "original_shape": [
+    100,
+    9
+  ],
+  "final_shape": [
+    100,
+    8
+  ],
+  "columns_removed": [
+    "constant_feat"
+  ],
+  "columns_kept": [
+    "feat_0",
+    "feat_1",
+    "feat_2",
+    "feat_3",
+    "feat_4",
+    "feat_with_missing",
+    "feat_with_inf",
+    "count_feat"
+  ],
+  "missing_values_before": 22,
+  "missing_values_after": 0,
+  "infinite_values_found": 11
+}
