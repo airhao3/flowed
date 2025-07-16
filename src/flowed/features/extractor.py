@@ -1,5 +1,6 @@
 """Feature extraction module for the traffic detection system."""
 import pandas as pd
+import numpy as np
 from loguru import logger
 import ipaddress
 import pkgutil
@@ -77,6 +78,10 @@ class FeatureExtractor:
         #     self.logger.warning("NaN values detected in features. Filling with 0.")
         #     data.fillna(0, inplace=True)
 
+        # Step 3: Preprocess and clean final features
+        if self.features_config.get('quality_control', {}).get('enabled', True):
+            data = self._preprocess_features(data)
+
         self.logger.success(f"Feature extraction pipeline complete. Final shape: {data.shape}")
         return data
 
@@ -140,6 +145,33 @@ class FeatureExtractor:
                         self.logger.info(f"Loading enricher: {member_name}")
                         enricher_config = self.enrichment_config['enrichers'][enricher_key]
                         self.enrichers.append(obj(enricher_config, self.cache_manager))
+
+    def _preprocess_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Feature preprocessing and standardization."""
+        self.logger.info("Starting feature preprocessing and cleaning...")
+        
+        # Handle infinite values
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        df[numeric_cols] = df[numeric_cols].replace([np.inf, -np.inf], np.nan)
+        self.logger.debug(f"Replaced infinite values in {len(numeric_cols)} numeric columns.")
+
+        # Fill missing values
+        # We can use a more sophisticated strategy from config if needed
+        df[numeric_cols] = df[numeric_cols].fillna(0)
+        self.logger.debug("Filled NaN values with 0.")
+
+        # Outlier detection and handling (clipping)
+        clip_config = self.features_config.get('quality_control', {}).get('clip_outliers', {})
+        if clip_config.get('enabled', True):
+            for col in numeric_cols:
+                # Apply clipping to rate-based features or as specified
+                if col.endswith('_per_sec') or col.endswith('_rate'):
+                    upper_bound = df[col].quantile(clip_config.get('quantile', 0.99))
+                    df[col] = df[col].clip(upper=upper_bound)
+                    self.logger.trace(f"Clipped column '{col}' at quantile {clip_config.get('quantile', 0.99)}.")
+
+        self.logger.success("Feature preprocessing complete.")
+        return df
 
     def _apply_enrichment(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply all loaded enrichers to the DataFrame."""

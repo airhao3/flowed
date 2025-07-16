@@ -4,22 +4,39 @@
 
 ### 1.1. 虚拟环境管理
 
-本项目使用 `uv` 作为包管理器和虚拟环境管理工具。请按照以下步骤设置开发环境：
+本项目支持使用 `uv` 或标准 `venv` 作为虚拟环境管理工具。推荐使用 `uv` 以获得更快的依赖安装速度。
 
-1. 创建虚拟环境：
+#### 使用 uv（推荐）
+1. 安装 uv（如果尚未安装）：
 ```bash
-uv venv .venv
+curl -sSf https://astral.sh/uv/install.sh | sh
 ```
 
-2. 激活虚拟环境：
+2. 创建并激活虚拟环境：
 ```bash
-source .venv/bin/activate
+uv venv .venv
+source .venv/bin/activate  # Linux/Mac
+.venv\Scripts\activate    # Windows
 ```
 
 3. 安装项目依赖：
 ```bash
 uv pip install -e .
 uv pip install -r requirements.txt
+```
+
+#### 使用标准 venv
+1. 创建虚拟环境：
+```bash
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+.venv\Scripts\activate    # Windows
+```
+
+2. 安装项目依赖：
+```bash
+pip install -e .
+pip install -r requirements.txt
 ```
 
 ### 1.2. 项目愿景与目标
@@ -54,15 +71,16 @@ uv pip install -r requirements.txt
 
 ```
 flowed/
-├── data/                    # 工作数据根目录
-│   ├── raw/                 # 输入: 原始数据文件
-│   │   ├── pcap/            # PCAP 文件
-│   │   └── arkime/          # Arkime 导出文件(如适用)
-│   ├── processed/           # 输出: 处理后的中间数据 (Parquet 格式)
-│   │   ├── pcap/            # PCAP 处理后的数据
-│   │   └── arkime/          # Arkime 处理后的数据
-│   ├── models/              # 输出: 训练好的模型文件
-│   └── reports/             # 输出: 最终生成的分析报告 (HTML)
+├── config/                 # 配置文件目录
+│   └── default.yaml        # 默认配置文件
+├── data/                   # 工作数据根目录
+│   ├── raw/                # 输入: 原始数据文件
+│   │   └── pcap/           # PCAP/PCAPNG 文件
+│   ├── processed/          # 输出: 处理后的中间数据 (Parquet 格式)
+│   │   └── features.parquet # 处理后的特征数据
+│   ├── models/             # 输出: 训练好的模型文件
+│   │   └── isolation_forest_model/  # 隔离森林模型
+│   └── reports/            # 输出: 最终生成的分析报告 (HTML)
 ├── docs/                    # (未来) 项目文档
 ├── scripts/                 # 辅助脚本（安装、运行测试）
 │   ├── install.sh
@@ -72,31 +90,32 @@ flowed/
 │       ├── __init__.py
 │       ├── cli.py             # 命令行接口
 │       ├── main.py            # 主协调器
-│       ├── config/            # 配置文件
-│       │   └── default_config.yaml
 │       ├── data/              # 数据收集与处理
-│       │   ├── arkime_collector.py  # Arkime 数据收集器
-│       │   └── processors/     # 数据处理器
+│       │   └── processors/    # 数据处理器
 │       │       ├── base_processor.py
 │       │       └── pcap_processor.py
 │       ├── features/          # 特征工程
-│       │   ├── extractor.py
-│       │   ├── enricher.py        # 数据富化模块
-│       │   └── calculators/
+│       │   ├── extractor.py   # 特征提取主类
+│       │   └── calculators/   # 特征计算器
 │       │       ├── base_calculator.py
 │       │       ├── packet_calculator.py
 │       │       ├── flow_calculator.py
-│       │       ├── http_calculator.py
-│       │       ├── dns_calculator.py
-│       │       ├── tls_calculator.py
-│       │       └── host_calculator.py
+│       │       ├── host_calculator.py
+│       │       └── protocol_calculators/  # 协议特定计算器
+│       │           ├── dns_calculator.py
+│       │           ├── http_calculator.py
+│       │           ├── ssh_calculator.py
+│       │           └── tls_calculator.py
 │       ├── models/            # 异常检测模型
-│       │   └── detector.py
+│       │   ├── __init__.py
+│       │   ├── base_model.py  # 模型基类
+│       │   ├── isolation_forest.py  # 隔离森林实现
+│       │   └── model_manager.py     # 模型管理
 │       ├── utils/             # 工具函数
-│       │   ├── config.py
-│       │   └── logger.py
+│       │   ├── config.py      # 配置管理
+│       │   └── logger.py      # 日志配置
 │       └── visualization/     # 报告与可视化
-│           └── dashboard.py
+│           └── dashboard.py   # 报告生成器
 ├── tests/                   # 自动化测试
 │   ├── integration/
 │   └── unit/
@@ -179,21 +198,53 @@ flowed/
 - `rtt_sample_count`: RTT样本数
 
 ### 3.7 特征分层架构
-为了实现特征提取的全面性、模块化和可配置性，本系统采用分层、解耦的特征提取架构。`FeatureExtractor` 作为一个**协调器 (Coordinator)**，负责按顺序调用一系列可插拔的**特征计算器 (Feature Calculators)**。
 
-- **`features/extractor.py`**: `FeatureExtractor` 的职责是：
-    1.  协调数据富化层 (`enrichers`)，为 IP 地址添加上下文。
-    2.  根据配置，按顺序调用一个或多个特征计算器。
-    3.  将所有计算器生成的特征（包级、流级、主机级）智能地合并成一个最终的、宽格式的特征 DataFrame，并将其交付给模型层。
+本系统采用分层、模块化的特征提取架构，通过 `FeatureExtractor` 作为协调器，按顺序调用一系列可插拔的特征计算器。
 
-- **`features/calculators/`**: 此目录存放所有独立的特征计算器模块。
-    - **`base_calculator.py`**: 定义了所有计算器必须遵循的 `BaseCalculator` 抽象基类，确保接口统一。
-    - **`packet_calculator.py` (包级特征)**: 计算可以从单个数据包（即 DataFrame 的单行）中直接派生的特征。例如：解析 TCP 标志位、计算协议头长度等。
-    - **`flow_calculator.py` (流级特征)**: **这是特征工程的核心**。它将数据包按“流”（通常由源IP、目的IP、源端口、目的端口、协议定义）进行分组，然后计算每个流的统计特征，如：流持续时间、包长统计、流量速率、数据包到达间隔统计等。
-    - **`host_calculator.py` (主机级特征)**: 从单个主机的视角，在指定时间窗口内聚合其行为特征。例如：在1秒内，某主机发起的连接数、连接的目的端口分布、发送的总字节数等。这对于检测扫描行为或DDoS攻击前兆至关重要。
-    - **`http_calculator.py` (应用层特征 - HTTP)**: 专用于解析应用层协议。它会从数据包中提取 HTTP 请求的详细信息，如请求方法 (GET/POST)、请求 URI、User-Agent 和响应状态码，并计算 URI 长度、熵等衍生特征。这对于检测 Web 攻击（如 SQL 注入、XSS）或恶意爬虫至关重要。
-    - **`ssh_calculator.py` (应用层特征 - SSH)**: 负责分析加密的 SSH 流量。它并不解密流量，而是分析其元数据，如协议版本、客户端/服务器软件版本等。这些信息有助于识别协议降级攻击或使用已知存在漏洞的 SSH 版本。
-    - **`sql_calculator.py` (应用层特征 - SQL)**: 负责解析数据库查询流量（通过 TDS 协议）。它会分析 SQL 查询语句本身，计算其长度、熵，并根据可配置的关键词列表（如 `DROP TABLE`, `UNION SELECT`）来检测潜在的 SQL 注入攻击。
+#### 核心组件
+
+- **`features/extractor.py`**: 特征提取主类，负责：
+  1. 数据预处理和标准化
+  2. 按顺序调用特征计算器
+  3. 合并所有特征为统一的DataFrame
+  4. 处理特征缺失值和异常值
+
+- **`features/calculators/`**: 特征计算器目录
+  - **`base_calculator.py`**: 特征计算器基类，定义统一接口
+  - **`packet_calculator.py`**: 包级特征
+    - TCP标志位解析
+    - 协议类型识别
+    - 包长度统计
+  - **`flow_calculator.py`**: 流级特征（核心）
+    - 流持续时间
+    - 包长统计（均值、方差、最大值、最小值）
+    - 包到达间隔时间（IAT）统计
+    - 流量速率（包/秒，字节/秒）
+  - **`host_calculator.py`**: 主机级特征
+    - 时间窗口内的连接数
+    - 目的端口分布
+    - 流量模式分析
+  - **`protocol_calculators/`**: 协议特定特征
+    - `http_calculator.py`: HTTP协议特征
+    - `dns_calculator.py`: DNS查询分析
+    - `tls_calculator.py`: TLS/SSL握手特征
+    - `ssh_calculator.py`: SSH协议特征
+
+#### 特征计算流程
+
+1. **数据准备**：加载原始数据，进行基本清洗
+2. **包级特征**：提取单个数据包的特征
+3. **流级聚合**：按五元组（源/目的IP:端口+协议）聚合包特征
+4. **主机级聚合**：按源/目的IP聚合流特征
+5. **协议特定处理**：提取各应用层协议特有特征
+6. **特征合并**：将所有特征合并为统一的特征矩阵
+
+#### 性能优化
+
+- 使用Pandas向量化操作
+- 并行处理独立特征
+- 内存高效的数据类型
+- 增量特征计算
 
 - **未来扩展**: 添加新的特征类别（例如，针对特定应用层协议如DNS或HTTP的特征），只需在 `calculators` 目录下创建一个新的计算器类即可，无需修改现有逻辑。
 
@@ -521,7 +572,132 @@ DNS 是一个关键的攻击向量，常被用于数据泄露和 C&C 通信。�
 4.  **检测 (Detect)**：`ModelManager` 使用加载的算法模型，在特征数据上进行训练或预测异常。
 5.  **可视化 (Visualize)**：`ResultVisualizer` 使用特征和预测结果生成分析报告。
 
-## 5. 模型管理系统
+## 5. 异常检测模型
+
+### 5.1 模型架构
+
+系统采用模块化设计，支持多种异常检测算法。当前实现基于 **Isolation Forest** 算法，适用于高维数据的异常检测。
+
+#### 核心组件
+
+- **`models/base_model.py`**: 定义模型接口
+  - `train()`: 训练模型
+  - `predict()`: 预测异常
+  - `save()`/`load()`: 模型持久化
+  - `evaluate()`: 模型评估
+
+- **`models/isolation_forest.py`**: 隔离森林实现
+  - 支持自定义参数调优
+  - 特征重要性分析
+  - 异常分数归一化
+
+- **`models/model_manager.py`**: 模型管理
+  - 模型生命周期管理
+  - 模型版本控制
+  - 自动选择最优模型
+
+### 5.2 模型训练
+
+1. **数据准备**
+   - 特征标准化
+   - 处理类别特征
+   - 处理缺失值
+
+2. **训练流程**
+   - 交叉验证
+   - 超参数调优
+   - 早停机制
+
+3. **模型评估**
+   - 准确率/召回率
+   - ROC/AUC 曲线
+   - 混淆矩阵
+
+### 5.3 模型部署
+
+- 支持批量预测和实时预测
+- 模型热更新
+- 性能监控
+
+## 6. 可视化系统
+
+### 6.1 报告生成
+
+- **`visualization/dashboard.py`**: 生成交互式HTML报告
+  - 流量概览
+  - 异常检测结果
+  - 交互式图表
+
+### 6.2 可视化组件
+
+1. **Sankey 图**
+   - 展示主机间流量
+   - 突出异常连接
+
+2. **协议玫瑰图**
+   - 协议分布分析
+   - 异常协议检测
+
+3. **时间序列分析**
+   - 流量模式
+   - 异常时间点检测
+
+### 6.3 交互功能
+
+- 图表缩放/平移
+- 数据筛选
+- 工具提示
+- 图表联动
+
+## 7. 配置系统
+
+### 7.1 配置文件结构
+
+- **`config/default.yaml`**: 默认配置
+  - 数据路径
+  - 模型参数
+  - 特征选择
+  - 日志设置
+
+### 7.2 配置覆盖
+
+- 支持环境变量覆盖
+- 命令行参数优先
+- 配置验证
+
+## 8. 性能优化
+
+### 8.1 数据处理优化
+- 内存映射
+- 分块处理
+- 并行计算
+
+### 8.2 计算优化
+- 向量化操作
+- 多进程/多线程
+- 延迟加载
+
+## 9. 部署指南
+
+### 9.1 环境准备
+- Python 3.8+
+- 依赖安装
+- 配置设置
+
+### 9.2 运行方式
+
+```bash
+# 开发模式
+python -m flowed.cli --config config/default.yaml --debug
+
+# 生产模式
+python -m flowed.cli --config /path/to/config.yaml
+```
+
+### 9.3 监控与维护
+- 日志轮转
+- 资源监控
+- 告警设置
 
 ### 5.1 模型管理架构
 

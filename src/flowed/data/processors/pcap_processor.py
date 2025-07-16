@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional
+import ipaddress
 
 import pandas as pd
 import pyshark
@@ -61,6 +62,12 @@ class PcapProcessor(BaseProcessor):
 
                 packet_info = self._extract_packet_info(packet)
                 if packet_info:
+                    # Validate extracted data if enabled in config
+                    if self.config.get('quality_control', {}).get('validate_packets', True):
+                        if not self._validate_packet_data(packet_info):
+                            self.logger.trace(f"Packet {i} failed validation and was skipped.")
+                            continue
+
                     packets.append(packet_info)
                     packet_count += 1
                     
@@ -86,13 +93,50 @@ class PcapProcessor(BaseProcessor):
             self.logger.error(f"Error processing PCAP file {file_path}: {e}")
             raise
 
+    def _validate_packet_data(self, packet_info: Dict[str, Any]) -> bool:
+        """Validate the reasonableness of the extracted packet data."""
+        # IP address format check
+        if 'src_ip' in packet_info and packet_info['src_ip']:
+            try:
+                ipaddress.ip_address(packet_info['src_ip'])
+            except ValueError:
+                self.logger.trace(f"Invalid source IP address: {packet_info['src_ip']}")
+                return False
+        if 'dst_ip' in packet_info and packet_info['dst_ip']:
+            try:
+                ipaddress.ip_address(packet_info['dst_ip'])
+            except ValueError:
+                self.logger.trace(f"Invalid destination IP address: {packet_info['dst_ip']}")
+                return False
+
+        # Port range check
+        for port_field in ['src_port', 'dst_port']:
+            if port_field in packet_info and packet_info[port_field] is not None:
+                port = packet_info[port_field]
+                if not (0 <= port <= 65535):
+                    self.logger.trace(f"Invalid port number: {port}")
+                    return False
+
+        # Packet length sanity check
+        if 'frame_len' in packet_info and packet_info['frame_len'] is not None:
+            # Based on Ethernet v2, min frame size is 64 bytes (including FCS), but pyshark length is often without FCS (60).
+            # We use a slightly more relaxed lower bound.
+            min_len = self.config.get('quality_control', {}).get('min_packet_size', 14)
+            max_len = self.config.get('quality_control', {}).get('max_packet_size', 65535)
+            if not (min_len <= packet_info['frame_len'] <= max_len):
+                self.logger.trace(f"Packet length out of bounds: {packet_info['frame_len']}")
+                return False
+
+        return True
+
     def _extract_packet_info(self, packet: pyshark.packet.packet.Packet) -> Optional[Dict[str, Any]]:
         """Extract information from a single packet."""
         try:
             packet_info = {
                 'timestamp': float(packet.sniff_timestamp),
                 'frame_len': int(packet.length),
-                'protocol': packet.highest_layer
+                'protocol': packet.highest_layer,
+                'payload': packet.tcp.payload.raw_value if 'TCP' in packet and hasattr(packet.tcp, 'payload') else (packet.udp.payload.raw_value if 'UDP' in packet and hasattr(packet.udp, 'payload') else None)
             }
 
             if 'IP' in packet:
@@ -110,12 +154,16 @@ class PcapProcessor(BaseProcessor):
                 packet_info.update({
                     'src_port': int(tcp_layer.srcport),
                     'dst_port': int(tcp_layer.dstport),
-                    # Handle both hex strings and integers for flags
-                    'tcp_flags': int(tcp_layer.flags) if isinstance(tcp_layer.flags, int) 
-                                  else int(str(tcp_layer.flags), 16),
+                    'tcp_flags': int(str(tcp_layer.flags), 16),
                     'tcp_window_size': int(tcp_layer.window_size),
                     'tcp_ack': int(tcp_layer.ack),
-                    'tcp_seq': int(tcp_layer.seq)
+                    'tcp_seq': int(tcp_layer.seq),
+                    'tcp_mss': getattr(tcp_layer, 'options_mss_val', None),
+                    'tcp_window_scale': getattr(tcp_layer, 'options_wscale_val', None),
+                    'tcp_sack_permitted': getattr(tcp_layer, 'options_sack_perm', None),
+                    'tcp_timestamp': getattr(tcp_layer, 'options_timestamp_tsval', None),
+                    'tcp_urgent_pointer': int(tcp_layer.urgent_pointer),
+                    'tcp_checksum': getattr(tcp_layer, 'checksum', None),
                 })
             
             elif 'UDP' in packet:
@@ -123,6 +171,16 @@ class PcapProcessor(BaseProcessor):
                 packet_info.update({
                     'src_port': int(udp_layer.srcport),
                     'dst_port': int(udp_layer.dstport)
+                })
+
+            if 'ICMP' in packet:
+                icmp_layer = packet.icmp
+                packet_info.update({
+                    'icmp_type': int(icmp_layer.type),
+                    'icmp_code': int(icmp_layer.code),
+                    'icmp_checksum': getattr(icmp_layer, 'checksum', None),
+                    'icmp_id': getattr(icmp_layer, 'id', None),
+                    'icmp_seq': getattr(icmp_layer, 'seq', None),
                 })
 
             # --- Application Layer Protocols ---
@@ -141,6 +199,23 @@ class PcapProcessor(BaseProcessor):
 
             if 'HTTP' in packet:
                 http_layer = packet.http
+                # Count headers by splitting the header block
+                header_block = getattr(http_layer, 'request_headers', None) or getattr(http_layer, 'response_headers', None)
+                if header_block:
+                    packet_info['http_header_count'] = len(header_block.split('\n'))
+                else:
+                    packet_info['http_header_count'] = 0
+
+                packet_info.update({
+                    'http_content_type': getattr(http_layer, 'content_type', None),
+                    'http_content_length': getattr(http_layer, 'content_length', None),
+                    'http_referer': getattr(http_layer, 'referer', None),
+                    'http_cookie': getattr(http_layer, 'cookie', None),
+                    'http_authorization': getattr(http_layer, 'authorization', None),
+                    'http_x_forwarded_for': getattr(http_layer, 'x_forwarded_for', None),
+                    'http_server': getattr(http_layer, 'server', None),
+                    'http_location': getattr(http_layer, 'location', None),
+                })
                 # Check for request fields
                 if hasattr(http_layer, 'request_method'):
                     packet_info.update({
@@ -157,6 +232,16 @@ class PcapProcessor(BaseProcessor):
 
             if 'DNS' in packet:
                 dns_layer = packet.dns
+                packet_info.update({
+                    'dns_id': getattr(dns_layer, 'id', None),
+                    'dns_flags': getattr(dns_layer, 'flags', None),
+                    'dns_qr': getattr(dns_layer, 'flags_response', None),
+                    'dns_opcode': getattr(dns_layer, 'flags_opcode', None),
+                    'dns_rcode': getattr(dns_layer, 'flags_rcode', None),
+                    'dns_qd_count': getattr(dns_layer, 'count_queries', None),
+                    'dns_an_count': getattr(dns_layer, 'count_answers', None),
+                    'dns_response_ip': getattr(dns_layer, 'a', None),
+                })
                 # A single DNS packet can have multiple queries, but we focus on the first for simplicity.
                 if hasattr(dns_layer, 'qry_name'):
                     packet_info.update({

@@ -48,7 +48,10 @@ def main():
         elif args.log_level:
             detector.config['logging']['level'] = args.log_level
         if args.train:
-            detector.config['train']['force_retrain'] = True
+            # Ensure the train config exists under model
+            if 'train' not in detector.config['model']:
+                detector.config['model']['train'] = {}
+            detector.config['model']['train']['force_retrain'] = True
 
         # Run the detection pipeline
         detector.run()

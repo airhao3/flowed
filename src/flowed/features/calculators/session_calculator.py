@@ -20,19 +20,23 @@ class SessionCalculator(BaseCalculator):
     
     def _get_session_key(self, row: pd.Series) -> str:
         """生成不区分方向的会话键"""
-        src_ip, src_port = row['src_ip'], row['src_port']
-        dst_ip, dst_port = row['dst_ip'], row['dst_port']
-        
+        src_ip = str(row.get('src_ip', ''))
+        dst_ip = str(row.get('dst_ip', ''))
+        src_port = str(row.get('src_port', ''))
+        dst_port = str(row.get('dst_port', ''))
+        protocol = str(row.get('protocol', ''))
+
         # 对IP和端口进行排序以确保双向会话使用相同的键
         if src_ip < dst_ip or (src_ip == dst_ip and src_port <= dst_port):
-            return f"{src_ip}:{src_port}-{dst_ip}:{dst_port}-{row['protocol']}"
+            return f"{src_ip}:{src_port}-{dst_ip}:{dst_port}-{protocol}"
         else:
-            return f"{dst_ip}:{dst_port}-{src_ip}:{src_port}-{row['protocol']}"
+            return f"{dst_ip}:{dst_port}-{src_ip}:{src_port}-{protocol}"
     
     def _get_direction(self, row: pd.Series) -> str:
         """确定流量的方向"""
+        src_ip = str(row.get('src_ip', ''))
         # 这里简化处理，实际中可能需要更复杂的逻辑来确定内外网
-        if row['src_ip'].startswith('172.19.'):
+        if src_ip.startswith('172.19.'):
             return 'outbound'
         return 'inbound'
     
@@ -48,11 +52,17 @@ class SessionCalculator(BaseCalculator):
         """
         if df.empty:
             return df
-            
+
         self.logger.info("Calculating session-based features...")
-        
-        # 创建会话键和方向
+
         df = df.copy()
+        # Filter out rows where essential components for session key are missing
+        required_cols = ['src_ip', 'dst_ip', 'src_port', 'dst_port', 'protocol']
+        df.dropna(subset=required_cols, inplace=True)
+        if df.empty:
+            self.logger.warning("DataFrame is empty after dropping NaNs in required columns for session calculation.")
+            return df
+
         df['session_key'] = df.apply(self._get_session_key, axis=1)
         df['direction'] = df.apply(self._get_direction, axis=1)
         
@@ -95,12 +105,28 @@ class SessionCalculator(BaseCalculator):
                 # 合并回主统计表
                 session_stats = session_stats.join(dir_stats)
         
-        # 计算包大小比率
-        if 'inbound_frame_len_sum' in session_stats.columns and 'outbound_frame_len_sum' in session_stats.columns:
-            total = session_stats['inbound_frame_len_sum'] + session_stats['outbound_frame_len_sum']
-            session_stats['inbound_ratio'] = session_stats['inbound_frame_len_sum'] / total
-            session_stats['outbound_ratio'] = session_stats['outbound_frame_len_sum'] / total
+        # --- Asymmetry and Ratio Features ---
+        session_stats.fillna({'inbound_frame_len_sum': 0, 'outbound_frame_len_sum': 0, 
+                              'inbound_frame_len_count': 0, 'outbound_frame_len_count': 0}, inplace=True)
+
+        # Bytes and Packets Ratio
+        session_stats['session_bytes_ratio'] = session_stats['outbound_frame_len_sum'] / (session_stats['inbound_frame_len_sum'] + 1e-6)
+        session_stats['session_packets_ratio'] = session_stats['outbound_frame_len_count'] / (session_stats['inbound_frame_len_count'] + 1e-6)
+
+        # Small Packet Ratio
+        small_packet_threshold = self.config.get('small_packet_threshold', 64)
+        df['is_small_packet'] = (df['frame_len'] < small_packet_threshold).astype(int)
+        small_packet_stats = df.groupby('session_key')['is_small_packet'].sum().reset_index(name='small_packet_count')
+        session_stats = session_stats.merge(small_packet_stats, on='session_key', how='left')
+        session_stats['small_packet_ratio'] = session_stats['small_packet_count'] / session_stats['total_packets']
         
+        # --- Active/Idle Time Analysis ---
+        # Calculate active time (sum of flow durations) and idle time
+        active_time_stats = df.groupby('session_key')['flow_duration_seconds'].sum().reset_index(name='session_active_time')
+        session_stats = session_stats.merge(active_time_stats, on='session_key', how='left')
+        session_stats['session_idle_time'] = session_stats['session_duration'] - session_stats['session_active_time']
+        session_stats['active_idle_ratio'] = session_stats['session_active_time'] / (session_stats['session_idle_time'] + 1e-6)
+
         # 添加会话活跃度指标
         session_stats['packets_per_second'] = session_stats['total_packets'] / (session_stats['session_duration'] + 1e-6)
         session_stats['bytes_per_second'] = session_stats['total_bytes'] / (session_stats['session_duration'] + 1e-6)

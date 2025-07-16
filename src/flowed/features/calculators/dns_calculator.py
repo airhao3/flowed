@@ -37,9 +37,8 @@ class DnsCalculator(BaseCalculator):
         """
         self.logger.info("Calculating DNS-based features...")
 
-        dns_cols = ['dns_qry_name', 'dns_qry_type']
-        if not any(col in df.columns for col in dns_cols):
-            self.logger.warning("No DNS columns found. Skipping DNS calculations.")
+        dns_cols = ['dns_qry_name', 'dns_qry_type', 'dns_an_count', 'dns_response_ip']
+        if not self.validate_columns(df, dns_cols):
             return df
 
         df_copy = df.copy()
@@ -52,6 +51,19 @@ class DnsCalculator(BaseCalculator):
             # Feature: Query Name Entropy
             df_copy['dns_qry_name_entropy'] = df_copy['dns_qry_name'].apply(self.calculate_entropy).fillna(0)
             self.logger.debug("Calculated dns_qry_name_entropy.")
+
+        if 'dns_an_count' in df_copy.columns and 'dns_response_ip' in df_copy.columns:
+            # Feature: DNS Response IP to Query Ratio
+            # Count the number of IPs in the response field (can be a list)
+            def count_ips(val):
+                if isinstance(val, str):
+                    return len(val.split(','))
+                return 0
+
+            df_copy['dns_response_ip_count'] = df_copy['dns_response_ip'].apply(count_ips)
+            df_copy['dns_response_ip_to_query_ratio'] = df_copy['dns_response_ip_count'] / (df_copy['dns_an_count'] + 1e-6)
+            df_copy.drop(columns=['dns_response_ip_count'], inplace=True)
+            self.logger.debug("Calculated dns_response_ip_to_query_ratio.")
 
         self.logger.success("Finished calculating DNS-based features.")
         return df_copy

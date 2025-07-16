@@ -44,6 +44,9 @@ class FlowCalculator(BaseCalculator):
         # Sort by timestamp to correctly calculate time-based features like duration
         df_sorted = df.sort_values(by='timestamp').copy()
 
+        # Calculate inter-arrival time for each packet within its flow
+        df_sorted['inter_arrival_time'] = df_sorted.groupby(flow_key)['timestamp'].diff().dt.total_seconds().fillna(0)
+
         # Group by flow key
         grouped_flows = df_sorted.groupby(flow_key)
 
@@ -54,6 +57,7 @@ class FlowCalculator(BaseCalculator):
         aggregations = {
             'frame_len': ['count', 'sum', 'mean', 'std'],
             'timestamp': ['min', 'max'],
+            'inter_arrival_time': ['mean', 'std', 'max'],
             # Add other packet-level features to aggregate here
         }
 
@@ -76,6 +80,9 @@ class FlowCalculator(BaseCalculator):
             'frame_len_sum': 'flow_byte_count',
             'frame_len_mean': 'flow_mean_pkt_size',
             'frame_len_std': 'flow_std_pkt_size',
+            'inter_arrival_time_mean': 'flow_inter_arrival_time_mean',
+            'inter_arrival_time_std': 'flow_inter_arrival_time_stddev',
+            'inter_arrival_time_max': 'flow_inter_arrival_time_max',
         }
         flow_features.rename(columns=rename_dict, inplace=True)
 

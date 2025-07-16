@@ -1,6 +1,7 @@
 import pandas as pd
 from typing import Dict, Any
 from loguru import logger
+from scipy.stats import entropy
 
 from .base_calculator import BaseCalculator
 
@@ -14,6 +15,14 @@ class HostCalculator(BaseCalculator):
         self.logger = logger.bind(module=__name__)
         # Make the time window configurable
         self.time_window = self.config.get('time_window', '1s')
+
+    @staticmethod
+    def _calculate_entropy(series: pd.Series) -> float:
+        """Calculates the entropy of a pandas Series."""
+        if series.empty:
+            return 0.0
+        counts = series.value_counts()
+        return entropy(counts, base=2)
 
     def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -40,7 +49,7 @@ class HostCalculator(BaseCalculator):
         src_aggs = {
             "frame_len": ["count", "sum"],
             "dst_ip": ["nunique"],
-            "dst_port": ["nunique"],
+            "dst_port": ["nunique", self._calculate_entropy],
         }
 
         # Dynamically add DNS feature aggregations if columns exist
@@ -62,12 +71,18 @@ class HostCalculator(BaseCalculator):
             'frame_len_sum': 'src_host_byte_count_win',
             'dst_ip_nunique': 'src_host_distinct_dst_ips_win',
             'dst_port_nunique': 'src_host_distinct_dst_ports_win',
+            'dst_port__calculate_entropy': 'src_host_dst_port_entropy_win',
             'dns_qry_name_len_mean': 'src_host_dns_qry_len_mean_win',
             'dns_qry_name_len_std': 'src_host_dns_qry_len_std_win',
             'dns_qry_name_entropy_mean': 'src_host_dns_qry_entropy_mean_win',
             'dns_qry_name_entropy_std': 'src_host_dns_qry_entropy_std_win',
             'tls_ja3_nunique': 'src_host_distinct_ja3_win',
         }, inplace=True)
+
+        # Calculate session frequency change over time for each source IP
+        src_host_features.sort_values(by=['src_ip', 'timestamp'], inplace=True)
+        src_host_features['src_host_session_freq_change_win'] = src_host_features.groupby('src_ip')['src_host_distinct_dst_ips_win'].diff().fillna(0)
+
         src_host_features.reset_index(inplace=True)
 
         # --- Destination Host Features ---

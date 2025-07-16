@@ -94,7 +94,10 @@ class TrafficDetector:
             # Step 3: Model Training/Loading
             self.logger.debug("Checking model loading/training...")
             try:
-                if self.config.get('train', {}).get('force_retrain', False):
+                # Get training config, defaulting to empty dict if not found
+                train_config = self.config.get('model', {}).get('train', {})
+                
+                if train_config.get('force_retrain', False):
                     self.logger.info("Training model as per configuration...")
                     self.model_manager.train(features)
                 else:
