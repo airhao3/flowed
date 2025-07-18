@@ -52,24 +52,41 @@ class DataIngestor:
             except Exception as e:
                 self.logger.warning(f"Could not import or inspect module {module_name}: {e}")
 
-    def process_files(self, file_paths: list) -> pd.DataFrame:
-        """Process a list of raw data files (e.g., PCAP) into a standardized DataFrame."""
+    def process_files(self, file_paths: list) -> (pd.DataFrame, Dict[str, Any]):
+        """Process a list of raw data files and return aggregated statistics."""
         all_data = []
+        aggregated_stats = {
+            'total_files': len(file_paths),
+            'files_processed_successfully': 0,
+            'total_packets_read': 0,
+            'malformed_packets_skipped': 0,
+            'packets_failed_validation': 0,
+            'packets_out_of_size_range': 0,
+            'packets_successfully_processed': 0,
+        }
+
         for file_path in file_paths:
             try:
-                processed_df = self.process_file(file_path)
+                processed_df, stats = self.process_file(file_path)
                 if not processed_df.empty:
                     all_data.append(processed_df)
+                    aggregated_stats['files_processed_successfully'] += 1
+                    # Aggregate stats from each file
+                    for key in stats:
+                        if key in aggregated_stats and isinstance(stats[key], int):
+                            aggregated_stats[key] += stats[key]
             except Exception as e:
                 self.logger.error(f"Failed to process file {file_path}: {e}")
 
         if not all_data:
             self.logger.warning("No data was successfully ingested from any of the provided files.")
-            return pd.DataFrame()
+            return pd.DataFrame(), aggregated_stats
 
-        return pd.concat(all_data, ignore_index=True)
+        final_df = pd.concat(all_data, ignore_index=True)
+        self.logger.info(f"Successfully ingested {len(final_df)} records from {len(file_paths)} files.")
+        return final_df, aggregated_stats
 
-    def process_file(self, file_path: str, processor_type: Optional[str] = None) -> pd.DataFrame:
+    def process_file(self, file_path: str, processor_type: Optional[str] = None) -> (pd.DataFrame, Dict[str, Any]):
         """
         Processes a single data file using the appropriate processor.
 
@@ -79,7 +96,7 @@ class DataIngestor:
                             it will be inferred from the configuration.
 
         Returns:
-            A standardized pandas DataFrame.
+            A tuple of (DataFrame, stats_dict).
         """
         if processor_type is None:
             # For now, we infer from file extension. Could be made more robust.

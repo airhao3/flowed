@@ -6,10 +6,13 @@ import ipaddress
 import pkgutil
 import inspect
 from pathlib import Path
+from typing import List, Optional, Dict, Any
 
 from flowed.enrichers.base_enricher import BaseEnricher
 from flowed.enrichers.cache_manager import CacheManager
 from .calculators.base_calculator import BaseCalculator
+from .calculators.profile_comparison_calculator import ProfileComparisonCalculator
+from ..profiles.profile_store import ProfileStore
 
 class FeatureExtractor:
     """Coordinates feature extraction by loading and applying enrichers and feature calculators."""
@@ -35,6 +38,64 @@ class FeatureExtractor:
         # Initialize Feature Calculators
         self.logger.info("Initializing feature calculators...")
         self._load_calculators()
+
+        # Initialize Profile-based components (for L3 features)
+        self.logger.info("Initializing profile store and comparison calculator...")
+        self.profile_store = ProfileStore()
+        # The config for ProfileComparisonCalculator can be enhanced in the future
+        self.profile_comparison_calculator = ProfileComparisonCalculator(config=self.features_config)
+
+    def extract_session_features(self, session_df: pd.DataFrame, client_ip: str) -> (Optional[Dict[str, Any]], Optional[Dict[str, Any]]):
+        """
+        Runs the new session-centric feature extraction pipeline (L2 + L3).
+
+        Args:
+            session_df: DataFrame containing all packets/flows for a single session.
+            client_ip: The client IP address for this session.
+
+        Returns:
+            A tuple containing:
+            - A dictionary representing the final feature vector for the session.
+            - The historical profile used for comparison.
+        """
+        if session_df.empty:
+            self.logger.warning(f"Input DataFrame for session {client_ip} is empty. Skipping.")
+            return None, None
+
+        # 1. Calculate L2 features for the session
+        session_with_l2_features = self._apply_l2_calculators(session_df)
+
+        # 2. Aggregate L2 features into a single dictionary for the session
+        # This simple aggregation takes the first row. More complex logic can be added.
+        # For example, summing/averaging features if a session contains multiple flows.
+        if session_with_l2_features.empty:
+            self.logger.warning(f"L2 feature calculation returned empty df for {client_ip}. Skipping.")
+            return None, None
+        session_l2_features = session_with_l2_features.iloc[0].to_dict()
+        session_l2_features['client_ip'] = client_ip # Ensure IP is in the feature set
+
+        # Ensure timestamps are in a serializable format (string)
+        for key, value in session_l2_features.items():
+            if isinstance(value, pd.Timestamp):
+                session_l2_features[key] = value.isoformat()
+
+        # 3. Get historical profile for the IP
+        historical_profile = self.profile_store.get_profile(client_ip)
+
+        # 4. Calculate L3 features by comparing session to profile
+        session_l3_features = self.profile_comparison_calculator.calculate(
+            session_features=session_l2_features,
+            historical_profile=historical_profile
+        )
+
+        # 5. Merge L2 and L3 features
+        final_features = {**session_l2_features, **session_l3_features}
+
+        # 6. Update the profile with the latest session's L2 features
+        self.profile_store.update_profile(client_ip, session_l2_features)
+        
+        self.logger.success(f"Successfully extracted L2+L3 features for {client_ip}")
+        return final_features, historical_profile
 
     def extract_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """
@@ -64,14 +125,8 @@ class FeatureExtractor:
             data = self._apply_enrichment(data)
             self.logger.debug(f"After enrichment: {data.columns.tolist()}")
 
-        # Step 2: Apply feature calculators in order
-        for calculator in self.calculators:
-            calculator_name = calculator.__class__.__name__
-            log = self.logger.bind(calculator=calculator_name)
-            log.info(f"Applying {calculator_name}...")
-            data = calculator.calculate(data)
-            log.success(f"Finished applying {calculator_name}. DF shape: {data.shape}")
-            self.logger.debug(f"Columns after {calculator_name}: {data.columns.tolist()}")
+        # Step 2: Apply L2 feature calculators
+        data = self._apply_l2_calculators(data)
 
         # Final check for NaN values
         # if data.isnull().values.any():
@@ -84,6 +139,17 @@ class FeatureExtractor:
 
         self.logger.success(f"Feature extraction pipeline complete. Final shape: {data.shape}")
         return data
+
+    def _apply_l2_calculators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Applies all loaded L2 feature calculators to the DataFrame."""
+        for calculator in self.calculators:
+            calculator_name = calculator.__class__.__name__
+            log = self.logger.bind(calculator=calculator_name)
+            log.info(f"Applying {calculator_name}...")
+            df = calculator.calculate(df)
+            log.success(f"Finished applying {calculator_name}. DF shape: {df.shape}")
+            self.logger.debug(f"Columns after {calculator_name}: {df.columns.tolist()}")
+        return df
 
     def _prepare_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Prepares the DataFrame for feature calculation."""

@@ -20,14 +20,16 @@ class ResultVisualizer:
         self.output_dir = Path(self.config.get('output_dir', 'data/reports'))
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def generate_report(self, features: pd.DataFrame, predictions: pd.Series, output_file: str) -> str:
+    def generate_report(self, all_features_df: pd.DataFrame, anomalies: list, output_file: str, summary: dict) -> str:
         """Generate a report from the analysis results.
-        
+
         Args:
-            features: DataFrame of features.
-            predictions: Series of anomaly predictions.
+            all_features_df: DataFrame of all extracted features for general stats.
+            anomalies: A list of dictionaries, where each dictionary contains details
+                       about an anomalous session (features, score, profile snapshot).
             output_file: Base name for the output report file.
-            
+            summary: A dictionary containing the run summary statistics.
+
         Returns:
             Path to the generated report.
         """
@@ -40,34 +42,26 @@ class ResultVisualizer:
 
         self.logger.info(f"Generating {report_format} report at {output_path}")
 
-        # Validate input data
-        if features.empty:
+        if all_features_df.empty:
             self.logger.warning("Features DataFrame is empty, generating minimal report.")
             return self._generate_empty_report(output_path, output_file)
         
-        # Ensure predictions is a Series with the same length as features
-        if not isinstance(predictions, pd.Series) or len(predictions) != len(features):
-            self.logger.warning("Creating dummy predictions to enable visualization")
-            predictions = pd.Series(0, index=features.index)
+        anomalies_df = pd.DataFrame(anomalies)
+        num_anomalies = len(anomalies_df)
+        anomaly_ratio = num_anomalies / len(all_features_df) if len(all_features_df) > 0 else 0
 
-        # Safe anomaly detection with memory management
-        features['is_anomaly'] = predictions.astype(bool)
-        anomalies = features[features['is_anomaly']].copy()
-        num_anomalies = len(anomalies)
-        anomaly_ratio = num_anomalies / len(features) if len(features) > 0 else 0
-
-        # Generate visualizations with error handling
         visualizations = {}
         try:
             self.logger.info("Generating traffic analysis visualizations...")
-            visualizations['traffic_analysis'] = self._generate_traffic_analysis(features)
-            visualizations['sankey'] = self._generate_sankey_diagram(features)
-            visualizations['protocol_rose'] = self._generate_protocol_rose_chart(features)
+            visualizations['traffic_analysis'] = self._generate_traffic_analysis(all_features_df)
+            visualizations['sankey'] = self._generate_sankey_diagram(all_features_df)
+            visualizations['protocol_rose'] = self._generate_protocol_rose_chart(all_features_df)
         except Exception as e:
             self.logger.error(f"Error generating visualizations: {e}", exc_info=True)
             visualizations['error'] = f"<div class='error'><p>Error generating visualizations: {str(e)}</p></div>"
 
-        # Generate HTML content
+        summary_table = self._generate_summary_table(summary)
+
         html_content = f"""
         <!DOCTYPE html>
         <html>
@@ -80,7 +74,7 @@ class ResultVisualizer:
                     line-height: 1.6;
                     color: #333;
                 }}
-                .summary {{ 
+                .summary, .summary-table-container {{ 
                     background-color: #f8f9fa; 
                     border: 1px solid #e9ecef; 
                     padding: 20px; 
@@ -94,24 +88,6 @@ class ResultVisualizer:
                     background: white;
                     border-radius: 8px;
                     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }}
-                .section {{ 
-                    margin: 2em 0;
-                    padding: 1em;
-                    background: white;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                }}
-                .section-header {{ 
-                    background-color: #f1f8ff; 
-                    padding: 12px 15px;
-                    border-left: 4px solid #3498db;
-                    margin: -1em -1em 1em -1em;
-                    border-radius: 8px 8px 0 0;
-                }}
-                .section-content {{ 
-                    margin: 1em 0; 
-                    padding: 0 0.5em;
                 }}
                 table {{ 
                     border-collapse: collapse; 
@@ -127,90 +103,33 @@ class ResultVisualizer:
                 }}
                 th {{ 
                     background-color: #f2f2f2;
-                    position: sticky;
-                    top: 0;
-                }}
-                tr:nth-child(even) {{ 
-                    background-color: #f9f9f9; 
-                }}
-                tr:hover {{ 
-                    background-color: #f1f1f1; 
-                }}
-                .anomaly {{ 
-                    background-color: #fff3cd !important; 
-                }}
-                .critical {{ 
-                    background-color: #f8d7da !important; 
-                }}
-                .visualization-container {{
-                    margin: 2em 0;
-                    padding: 1em;
-                    border: 1px solid #e0e0e0;
-                    border-radius: 8px;
-                    background: white;
-                }}
-                .visualization-container iframe {{
-                    width: 100%;
-                    min-height: 600px;
-                    border: none;
-                }}
-                h1, h2, h3, h4, h5, h6 {{
-                    color: #2c3e50;
-                    margin-top: 1.5em;
-                }}
-                h1 {{ 
-                    color: #1a5276;
-                    border-bottom: 2px solid #3498db;
-                    padding-bottom: 0.3em;
-                }}
-                .error {{
-                    background-color: #fde8e8;
-                    color: #c0392b;
-                    padding: 1em;
-                    border-radius: 4px;
-                    margin: 1em 0;
-                    border-left: 4px solid #e74c3c;
-                }}
-                @media (max-width: 768px) {{
-                    body {{
-                        margin: 1em;
-                    }}
-                    .section, .traffic-analysis {{
-                        padding: 0.5em;
-                    }}
                 }}
             </style>
-            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
         </head>
         <body>
             <h1>Network Traffic Analysis Report</h1>
             <p>Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
             
             <div class="summary">
-                <h2>Summary</h2>
-                <p><b>Total Samples Analyzed:</b> {len(features):,}</p>
+                <h2>Overall Summary</h2>
+                <p><b>Total Samples Analyzed:</b> {len(all_features_df):,}</p>
                 <p><b>Anomalies Detected:</b> {num_anomalies} ({anomaly_ratio:.2%})</p>
-                <p><b>Time Range:</b> {features['timestamp'].min()} to {features['timestamp'].max()}</p>
+                <p><b>Time Range:</b> {all_features_df['timestamp'].min()} to {all_features_df['timestamp'].max()}</p>
+            </div>
+
+            <div class="summary-table-container">
+                <h2>Processing Pipeline Summary</h2>
+                {summary_table}
             </div>
 
             <div class="traffic-analysis">
                 <h2>Traffic Analysis</h2>
                 {visualizations.get('traffic_analysis', '')}
-                
-                <div class="visualization-container">
-                    <h3>Network Flow Visualization</h3>
-                    {visualizations.get('sankey', '<p>Flow visualization not available</p>')}
-                </div>
-                
-                <div class="visualization-container">
-                    <h3>Protocol Distribution</h3>
-                    {visualizations.get('protocol_rose', '<p>Protocol distribution not available</p>')}
-                </div>
             </div>
 
             <h2>Detected Anomalies ({num_anomalies} found)</h2>
-            {self._generate_anomaly_explanation(anomalies) if num_anomalies > 0 else ''}
-            {anomalies.head(100).to_html(max_rows=100) if num_anomalies > 0 else '<p>No anomalies detected.</p>'}
+            {self._generate_anomaly_explanation(anomalies_df) if num_anomalies > 0 else ''}
+            {anomalies_df.head(100).to_html(max_rows=100) if num_anomalies > 0 else '<p>No anomalies detected.</p>'}
         </body>
         </html>
         """
@@ -223,6 +142,33 @@ class ResultVisualizer:
         except Exception as e:
             self.logger.error(f"Failed to write report to {output_path}: {e}")
             return ""
+
+    def _generate_summary_table(self, summary: dict) -> str:
+        """Generates an HTML table from the summary dictionary."""
+        ingestion = summary.get('ingestion_stats', {})
+        session = summary.get('sessionization_stats', {})
+        detection = summary.get('detection_stats', {})
+
+        html = "<table>"
+        html += "<tr><th>Stage</th><th>Metric</th><th>Value</th></tr>"
+        
+        # Ingestion Stats
+        html += f"<tr><td rowspan='4'>Ingestion</td><td>Files Found</td><td>{ingestion.get('total_files', 0)}</td></tr>"
+        html += f"<tr><td>Packets Read</td><td>{ingestion.get('total_packets_read', 0)}</td></tr>"
+        html += f"<tr><td>Packets Filtered/Skipped</td><td>{ingestion.get('total_packets_read', 0) - ingestion.get('packets_successfully_processed', 0)}</td></tr>"
+        html += f"<tr><td>Packets Processed</td><td>{ingestion.get('packets_successfully_processed', 0)}</td></tr>"
+
+        # Sessionization Stats
+        html += f"<tr><td rowspan='2'>Sessionization</td><td>Records Before Aggregation</td><td>{session.get('total_records_before_sessionization', 0)}</td></tr>"
+        html += f"<tr><td>Unique Sessions (by src_ip)</td><td>{session.get('total_sessions_created', 0)}</td></tr>"
+
+        # Detection Stats
+        html += f"<tr><td rowspan='3'>Detection</td><td>Sessions Processed</td><td>{detection.get('sessions_processed_successfully', 0)}</td></tr>"
+        html += f"<tr><td>Sessions Skipped/Failed</td><td>{detection.get('sessions_skipped_or_failed', 0)}</td></tr>"
+        html += f"<tr><td>Anomalies Detected</td><td>{detection.get('anomalies_detected', 0)}</td></tr>"
+
+        html += "</table>"
+        return html
 
     def _generate_traffic_analysis(self, features: pd.DataFrame) -> str:
         """Generate comprehensive traffic analysis."""
@@ -474,6 +420,58 @@ class ResultVisualizer:
         
         <p><i>This automated analysis provides a high-level overview. For critical systems, always correlate these findings with other security logs and contextual information.</i></p>"""
         return explanation
+
+    def _generate_anomaly_details_view(self, anomalies: list) -> str:
+        """Generate a detailed side-by-side comparison for each anomaly."""
+        if not anomalies:
+            return ""
+
+        html = "<div class='anomaly-details-container'>"
+
+        for i, anomaly in enumerate(anomalies):
+            features = anomaly['features']
+            profile = anomaly['profile_snapshot']
+            score = anomaly['anomaly_score']
+            ip = features.get('client_ip', 'N/A')
+
+            # --- Current Session Table ---
+            current_session_html = "<table class='comparison-table'><tr><th colspan='2'>Current Session</th></tr>"
+            for key, val in features.items():
+                row_class = 'highlight' if 'is_new' in key and val == 1 else ''
+                current_session_html += f"<tr class='{row_class}'><td>{key}</td><td>{val}</td></tr>"
+            current_session_html += "</table>"
+
+            # --- Historical Profile Table ---
+            if profile:
+                historical_profile_html = "<table class='comparison-table'><tr><th colspan='2'>Historical Profile</th></tr>"
+                # Sort profile for consistent display
+                sorted_profile_items = sorted(profile.items())
+                for key, val in sorted_profile_items:
+                    if isinstance(val, set) or isinstance(val, list):
+                        val_str = ', '.join(map(str, val)) if val else 'None'
+                        if len(val_str) > 100: # Truncate long lists
+                           val_str = val_str[:100] + '...'
+                    else:
+                        val_str = str(val)
+                    historical_profile_html += f"<tr><td>{key}</td><td>{val_str}</td></tr>"
+                historical_profile_html += "</table>"
+            else:
+                historical_profile_html = "<div class='profile-note'>No historical profile available (first time seeing this IP).</div>"
+
+            # --- Assemble Card ---
+            html += f"""
+            <div class='anomaly-card'>
+                <h3 class='anomaly-title'>Anomaly #{i+1}: IP Address {ip} (Score: {score:.4f})</h3>
+                <div class='comparison-container'>
+                    <div>{current_session_html}</div>
+                    <div>{historical_profile_html}</div>
+                </div>
+            </div>
+            """
+
+        html += "</div>"
+        return html
+
     def _generate_empty_report(self, output_path: Path, output_file: str) -> str:
         """Generate a minimal report when no data is available."""
         html_content = f"""

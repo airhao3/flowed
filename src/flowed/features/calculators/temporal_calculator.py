@@ -9,6 +9,9 @@ class TemporalCalculator(BaseCalculator):
         if 'timestamp' not in df.columns:
             return df
 
+        # Ensure timestamp is timezone-aware (UTC)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
+
         df = df.sort_values('timestamp').copy()
 
         # Inter-arrival time

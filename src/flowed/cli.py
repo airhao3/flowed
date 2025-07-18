@@ -30,38 +30,20 @@ def main():
     args = parser.parse_args()
 
     try:
-        # Initialize the main application
         detector = TrafficDetector(config_path=args.config)
 
-        # Override configuration with CLI arguments where provided
-        if args.input_dir:
-            detector.config['data']['input_dir'] = args.input_dir
-        if args.output_dir:
-            detector.config['data']['output_dir'] = args.output_dir
-            detector.config['visualization']['output_dir'] = args.output_dir
-            detector.config['model']['save_dir'] = f"{args.output_dir}/models"
+        # Override config with CLI args
         if args.source:
             detector.config['data']['source'] = args.source
-        # Set log level based on --verbose or --log-level
-        if args.verbose:
-            detector.config['logging']['level'] = 'DEBUG'
-        elif args.log_level:
-            detector.config['logging']['level'] = args.log_level
         if args.train:
-            # Ensure the train config exists under model
-            if 'train' not in detector.config['model']:
-                detector.config['model']['train'] = {}
             detector.config['model']['train']['force_retrain'] = True
-
-        # Run the detection pipeline
-        detector.run()
         
-        logger.success("Traffic detection process finished.")
-        return 0
+        detector.run()
+        logger.success("Traffic detection process finished successfully.")
 
     except Exception as e:
-        logger.critical(f"A fatal error occurred: {e}", exc_info=True)
-        return 1
+        logger.critical(f"A fatal error occurred in the application: {e}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     sys.exit(main())

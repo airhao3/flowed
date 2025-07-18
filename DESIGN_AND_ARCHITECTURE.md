@@ -440,8 +440,6 @@ DNS 是一个关键的攻击向量，常被用于数据泄露和 C&C 通信。�
 | ... | 1.0                   | 3              | 3.0                  | 2                  | 1                  | 0.5           | 6.0              |
 | ... | 1.0                   | 3              | 3.0                  | 2                  | 1                  | 0.5           | 6.0              |
 
-
-
 **3. `HttpCalculator` (应用层): 解剖Web流量**
 
 - **主要特征**: `http_uri_length`, `http_uri_entropy`, `http_method_*` (独热编码)。
@@ -527,8 +525,6 @@ DNS 是一个关键的攻击向量，常被用于数据泄露和 C&C 通信。�
     *   **证书异常**: 使用自签名证书、证书有效期过短/过长、证书颁发者不常见等。
     *   **连接模式**: 即使流量是加密的，其连接的**周期性、数据包大小分布、连接时长**等行为特征依然可以被 `FlowCalculator` 捕捉，并与已知恶意软件的行为模式进行匹配。
 *   **检测思路**: 需要一个 `TlsCalculator` 来解析 TLS 握手过程，提取 **JA3/JA3S 指纹**和**证书信息**。同时，`FlowCalculator` 提取的行为特征也至关重要。
-
-
 
 #### 阶段 4: 最终特征向量
 
@@ -896,7 +892,172 @@ arkime:
     - 实现增量数据同步功能
     - 添加对 Arkime SPI 视图的自定义字段映射
 
+- **跳转处理与完整会话跟踪**：
+    - 实现 HTTP 重定向链的自动跟踪与关联
+    - 支持代理和负载均衡环境下的会话追踪
+    - 添加对 NAT 环境中的地址转换跟踪
+    - 实现基于时间窗口的会话重组算法
+    - 添加对 WebSocket 等长连接协议的状态跟踪
+
 - **性能优化**：
     - 实现流式处理大型 Arkime 结果集
     - 添加查询结果缓存机制
     - 优化内存使用，特别是在处理大型PCAP文件时
+
+## 4. 会话分析与特征提取
+
+### 4.1 会话定义与生命周期
+
+#### 4.1.1 基本概念
+- **会话(Session)**: 表示两个端点之间的逻辑通信序列，由五元组(源IP、源端口、目的IP、目的端口、协议)定义
+- **会话方向**: 根据源IP地址判断入站(inbound)或出站(outbound)流量
+- **会话超时**: 默认30秒无活动后认为会话结束
+- **会话键(Session Key)**: 使用`_get_session_key`方法生成，确保双向会话使用相同的键
+
+#### 4.1.2 代码实现
+```python
+# 会话键生成逻辑 (session_calculator.py)
+def _get_session_key(self, row: pd.Series) -> str:
+    src_ip = str(row.get('src_ip', ''))
+    dst_ip = str(row.get('dst_ip', ''))
+    src_port = str(row.get('src_port', ''))
+    dst_port = str(row.get('dst_port', ''))
+    protocol = str(row.get('protocol', ''))
+    
+    # 对IP和端口进行排序以确保双向会话使用相同的键
+    if src_ip < dst_ip or (src_ip == dst_ip and src_port <= dst_port):
+        return f"{src_ip}:{src_port}-{dst_ip}:{dst_port}-{protocol}"
+    else:
+        return f"{dst_ip}:{dst_port}-{src_ip}:{src_port}-{protocol}"
+```
+
+### 4.2 会话特征提取实现
+
+#### 4.2.1 特征列表
+
+`SessionCalculator` 计算以下几类特征：
+
+1.  **基础统计特征**
+    *   `total_packets`: 会话总包数
+    *   `total_bytes`: 会话总字节数
+    *   `avg_packet_size`: 平均包大小
+    *   `std_packet_size`: 包大小标准差
+
+2.  **时间相关特征**
+    *   `session_duration`: 会话持续时间
+    *   `session_active_time`: 会话活跃时间（所有流持续时间之和）
+    *   `session_idle_time`: 会话空闲时间
+    *   `active_idle_ratio`: 活跃/空闲时间比
+
+3.  **方向与不对称特征**
+    *   `inbound_frame_len_count` / `outbound_frame_len_count`: 入/出方向的包数量
+    *   `inbound_frame_len_sum` / `outbound_frame_len_sum`: 入/出方向的字节总量
+    *   `session_bytes_ratio`: 出/入方向字节比
+    *   `session_packets_ratio`: 出/入方向包数量比
+
+4.  **行为与速率特征**
+    *   `small_packet_count`: 小数据包（<64字节）数量
+    *   `small_packet_ratio`: 小数据包比率
+    *   `packets_per_second`: 每秒包数
+    *   `bytes_per_second`: 每秒字节数
+
+#### 4.2.2 核心代码
+
+以下是 `calculate` 方法的核心逻辑，展示了如何计算这些复杂的会话级特征。
+
+```python
+# 会话特征提取 (session_calculator.py)
+def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
+    # ... 省略输入验证和准备步骤 ...
+
+    # 1. 生成会话键和方向
+    df['session_key'] = df.apply(self._get_session_key, axis=1)
+    df['direction'] = df.apply(self._get_direction, axis=1)
+    
+    # 2. 计算基础会话统计
+    session_stats = df.groupby('session_key').agg(
+        total_packets=('frame_len', 'count'),
+        total_bytes=('frame_len', 'sum'),
+        # ... 其他基础聚合 ...
+    )
+
+    # 3. 计算方向性统计
+    for direction in ['inbound', 'outbound']:
+        dir_df = df[df['direction'] == direction]
+        if not dir_df.empty:
+            dir_stats = dir_df.groupby('session_key').agg(
+                frame_len_count=('frame_len', 'count'),
+                frame_len_sum=('frame_len', 'sum')
+            )
+            session_stats = session_stats.join(dir_stats.add_prefix(f'{direction}_'))
+
+    # 4. 计算不对称和比率特征
+    session_stats['session_bytes_ratio'] = session_stats['outbound_frame_len_sum'] / (session_stats['inbound_frame_len_sum'] + 1e-6)
+    session_stats['session_packets_ratio'] = session_stats['outbound_frame_len_count'] / (session_stats['inbound_frame_len_count'] + 1e-6)
+
+    # 5. 计算活跃/空闲时间
+    active_time_stats = df.groupby('session_key')['flow_duration_seconds'].sum()
+    session_stats['session_active_time'] = active_time_stats
+    session_stats['session_idle_time'] = session_stats['session_duration'] - session_stats['session_active_time']
+
+    # 6. 计算速率特征
+    session_stats['packets_per_second'] = session_stats['total_packets'] / (session_stats['session_duration'] + 1e-6)
+    session_stats['bytes_per_second'] = session_stats['total_bytes'] / (session_stats['session_duration'] + 1e-6)
+
+    # ... 合并结果并返回 ...
+    return df.merge(session_stats.reset_index(), on='session_key', how='left')
+```
+
+### 4.3 特征提取管道
+
+#### 4.3.1 特征提取器 (FeatureExtractor)
+```python
+class FeatureExtractor:
+    def __init__(self, config: dict):
+        self.config = config
+        self.features_config = config.get('features', {})
+        self.enrichers = []
+        self.calculators = []
+        self._load_calculators()
+        
+    def extract_session_features(self, session_df: pd.DataFrame, client_ip: str):
+        """
+        提取会话级特征 (L2 + L3)
+        
+        Args:
+            session_df: 包含会话数据的DataFrame
+            client_ip: 客户端IP地址
+            
+        Returns:
+            tuple: (特征字典, 历史档案)
+        """
+        # 1. 计算L2特征
+        session_with_l2 = self._apply_l2_calculators(session_df)
+        
+        # 2. 获取历史档案
+        historical_profile = self.profile_store.get_profile(client_ip)
+        
+        # 3. 计算L3特征 (与历史档案对比)
+        l3_features = self.profile_comparison_calculator.calculate(
+            session_features=session_with_l2,
+            historical_profile=historical_profile
+        )
+        
+        # 4. 合并特征并更新档案
+        features = {**session_with_l2, **l3_features}
+        self.profile_store.update_profile(client_ip, session_with_l2)
+        
+        return features, historical_profile
+```
+
+### 4.4 性能优化与扩展
+
+#### 4.4.1 性能优化
+- **批量处理**: 使用Pandas向量化操作
+- **内存管理**: 及时释放不再需要的数据
+- **并行处理**: 支持多会话并行处理
+
+#### 4.4.2 扩展性设计
+- **插件架构**: 支持动态加载特征计算器
+- **配置驱动**: 通过YAML配置调整特征提取参数
+- **可扩展性**: 易于添加新的特征类型和计算逻辑

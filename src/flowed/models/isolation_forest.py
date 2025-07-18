@@ -85,6 +85,11 @@ class IsolationForestModel(BaseModel):
             pd.Series: Feature importances with feature names as index, or None if calculation fails
         """
         try:
+            # Check if model has been trained and has estimators
+            if not hasattr(self.model, 'estimators_') or self.model.estimators_ is None:
+                self.logger.warning("Model has not been trained or estimators are not available. Cannot calculate feature importances.")
+                return None
+            
             # Convert features to numpy array if it's a DataFrame
             if hasattr(features, 'values'):
                 X = features.values
@@ -142,7 +147,7 @@ class IsolationForestModel(BaseModel):
             return self.feature_importances_
             
         except Exception as e:
-            error_msg = f"Error calculating feature importances: {e}"
+            error_msg = f"Error calculating feature importances for features: {features.shape if 'features' in locals() else 'unknown'}"
             self.logger.error(error_msg, exc_info=True)
             self.feature_importances_ = {}
             
@@ -311,6 +316,9 @@ class IsolationForestModel(BaseModel):
             self.model.fit(numeric_features)
             training_time = (datetime.now(timezone.utc) - start_time).total_seconds()
             self._training_time_seconds = training_time
+            
+            # Store feature names for later use
+            self.model.feature_names_in_ = numeric_features.columns.tolist()
             
             self.logger.info(f"Model training completed in {training_time:.2f} seconds")
             self.logger.debug(f"Model parameters: {self.model.get_params()}")

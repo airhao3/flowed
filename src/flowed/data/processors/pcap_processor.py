@@ -14,16 +14,28 @@ class PcapProcessor(BaseProcessor):
         super().__init__(config)
         self.logger = logger.bind(module=__name__)
 
-    def process(self, file_path: str) -> pd.DataFrame:
-        """Process a single PCAP file.
+    def process(self, file_path: str) -> (pd.DataFrame, Dict[str, Any]):
+        """Process a single PCAP file and return statistics.
 
         Args:
             file_path: Path to the input PCAP file.
 
         Returns:
-            A standardized DataFrame containing the processed data.
+            A tuple containing:
+            - A standardized DataFrame containing the processed data.
+            - A dictionary with processing statistics.
         """
         self.logger.info(f"Processing PCAP file: {file_path}")
+        
+        stats = {
+            'file_path': file_path,
+            'total_packets_read': 0,
+            'max_packets_limit': self.config.get('max_packets', 50000),
+            'malformed_packets_skipped': 0,
+            'packets_failed_validation': 0,
+            'packets_out_of_size_range': 0,
+            'packets_successfully_processed': 0,
+        }
 
         try:
             cap = pyshark.FileCapture(
@@ -32,29 +44,23 @@ class PcapProcessor(BaseProcessor):
             )
 
             packets = []
-            max_packets = self.config.get('max_packets', 50000)
-            batch_size = self.config.get('batch_size', 1000)
-            skip_malformed = self.config.get('skip_malformed', True)
             min_packet_size = self.config.get('min_packet_size', 14)
             max_packet_size = self.config.get('max_packet_size', 65535)
-            
-            packet_count = 0
-            malformed_count = 0
-            
+            skip_malformed = self.config.get('skip_malformed', True)
+
             for i, packet in enumerate(cap):
-                if i >= max_packets:
-                    self.logger.warning(f"Reached max packets limit ({max_packets}).")
+                stats['total_packets_read'] = i + 1
+                if i >= stats['max_packets_limit']:
+                    self.logger.warning(f"Reached max packets limit ({stats['max_packets_limit']}).")
                     break
 
-                # Basic packet size validation
                 try:
                     packet_len = int(packet.length)
-                    if packet_len < min_packet_size or packet_len > max_packet_size:
-                        if not skip_malformed:
-                            self.logger.warning(f"Packet {i} has invalid size: {packet_len}")
+                    if not (min_packet_size <= packet_len <= max_packet_size):
+                        stats['packets_out_of_size_range'] += 1
                         continue
                 except (ValueError, AttributeError):
-                    malformed_count += 1
+                    stats['malformed_packets_skipped'] += 1
                     if skip_malformed:
                         continue
                     else:
@@ -62,32 +68,27 @@ class PcapProcessor(BaseProcessor):
 
                 packet_info = self._extract_packet_info(packet)
                 if packet_info:
-                    # Validate extracted data if enabled in config
                     if self.config.get('quality_control', {}).get('validate_packets', True):
                         if not self._validate_packet_data(packet_info):
-                            self.logger.trace(f"Packet {i} failed validation and was skipped.")
+                            stats['packets_failed_validation'] += 1
                             continue
 
                     packets.append(packet_info)
-                    packet_count += 1
-                    
-                    # Process in batches to manage memory
-                    if packet_count % batch_size == 0:
-                        self.logger.debug(f"Processed {packet_count} packets...")
-            
+                else:
+                    stats['malformed_packets_skipped'] += 1
+
             cap.close()
-            
-            if malformed_count > 0:
-                self.logger.info(f"Skipped {malformed_count} malformed packets")
 
             if not packets:
                 self.logger.warning(f"No processable packets found in {file_path}")
-                return pd.DataFrame()
+                return pd.DataFrame(), stats
 
             df = pd.DataFrame(packets)
-            # Convert Unix timestamp to datetime objects
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-            return df
+            stats['packets_successfully_processed'] = len(df)
+            
+            self.logger.info(f"Finished processing {file_path}. Successfully processed {len(df)} packets.")
+            return df, stats
 
         except Exception as e:
             self.logger.error(f"Error processing PCAP file {file_path}: {e}")
