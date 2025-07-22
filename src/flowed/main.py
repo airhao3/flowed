@@ -5,12 +5,14 @@ Network Traffic Anomaly Detection System
 This module provides the main entry point for the traffic detection system.
 """
 import sys
-import logging
+import os
+import time
+import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
-from datetime import datetime
-
+from typing import Dict, List, Tuple, Union, Optional, Any
+import json
 from loguru import logger
+from box import Box
 import pandas as pd
 
 from flowed.utils.config import load_config, setup_logging
@@ -19,25 +21,34 @@ from flowed.data.arkime_collector import ArkimeCollector
 from flowed.data.ingestor import DataIngestor
 from flowed.features.extractor import FeatureExtractor
 from flowed.models import ModelManager
+from flowed.data.sequence_builder import SequenceBuilder
 from flowed.visualization.dashboard import ResultVisualizer
 
 class TrafficDetector:
     """Main class for the Traffic Detection System."""
 
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config: Box):
         """Initialize the Traffic Detection System.
 
         Args:
-            config_path: Path to the configuration file. If None, default config is used.
+            config: A Box object containing the application configuration.
         """
-        self.config = load_config(config_path)
-        setup_logging(self.config['logging'])
-        self.logger = logger.bind(module=__name__)
-        self.data_ingestor = DataIngestor(self.config)
+        self.config = config
+        logger.info("TrafficDetector initialized with pre-loaded configuration.")
+
         self.feature_extractor = FeatureExtractor(self.config)
         self.model_manager = ModelManager(self.config)
+        self.data_ingestor = DataIngestor(self.config['data_ingestion'])
+        
+        self.detection_mode = self.config['model']['detection_mode']
+        self.sequence_builder = None
+        if self.detection_mode in ['lstm_autoencoder', 'collaborative']:
+            lstm_params = self.config['model']['lstm_autoencoder']['params']
+            self.sequence_builder = SequenceBuilder(sequence_length=lstm_params['sequence_length'])
+            logger.info(f"SequenceBuilder initialized for '{self.detection_mode}' mode.")
+
         self.visualizer = ResultVisualizer(self.config['visualization'])
-        self.logger.info("Traffic Detection System initialized")
+        logger.info("Traffic Detection System initialized")
 
     def run(self) -> Dict[str, Any]:
         """Run the traffic detection pipeline."""
@@ -52,8 +63,8 @@ class TrafficDetector:
 
         try:
             # Step 1: Data Collection and Ingestion
-            self.logger.info("Starting data collection...")
-            data_source = self.config.get('data', {}).get('source', 'pcap')
+            logger.info("Starting data collection...")
+            data_source = self.config['data']['source']
             processed_data = None
             ingestion_stats = {}
 
@@ -61,24 +72,24 @@ class TrafficDetector:
                 # ... (Arkime implementation would also need to return stats)
                 pass
             elif data_source == 'pcap':
-                pcap_config = self.config.get('data', {}).get('pcap', {})
+                pcap_config = self.config['data']['pcap']
                 collector = DataCollector(pcap_config)
                 raw_files = collector.collect()
                 if not raw_files:
-                    self.logger.warning("No new PCAP files found. Exiting.")
+                    logger.warning("No new PCAP files found. Exiting.")
                     return {}
-                self.logger.info(f"Collected {len(raw_files)} PCAP files. Ingesting...")
+                logger.info(f"Collected {len(raw_files)} PCAP files. Ingesting...")
                 processed_data, ingestion_stats = self.data_ingestor.process_files(raw_files)
             
             run_summary['ingestion_stats'] = ingestion_stats
 
             if processed_data is None or processed_data.empty:
-                self.logger.warning("No data was processed. Exiting.")
+                logger.warning("No data was processed. Exiting.")
                 self._log_summary(run_summary)
                 return {}
 
             # Step 2: Sessionization
-            self.logger.info("Starting session-based processing...")
+            logger.info("Starting session-based processing...")
             session_key = 'src_ip'
             if session_key not in processed_data.columns:
                 raise RuntimeError(f"Session key '{session_key}' not found in data.")
@@ -88,32 +99,22 @@ class TrafficDetector:
                 'total_records_before_sessionization': len(processed_data),
                 'total_sessions_created': len(grouped_sessions)
             }
-            self.logger.info(f"Aggregated {len(processed_data)} records into {len(grouped_sessions)} sessions.")
+            logger.info(f"Aggregated {len(processed_data)} records into {len(grouped_sessions)} sessions.")
+            
+            # 将会话数据转换为列表并保存为实例变量，供训练模型使用
+            self.sessions = []
+            for _, session_df in grouped_sessions:
+                session_dict = session_df.to_dict('records')[0] if not session_df.empty else {}
+                self.sessions.append(session_dict)
+            logger.debug(f"Stored {len(self.sessions)} sessions as instance variable for model training")
 
             # Step 3: Feature Extraction and Detection
-            self._ensure_model_is_ready(processed_data)
+            self._ensure_model_is_ready()
             
             processed_sessions = 0
             for i, (client_ip, session_df) in enumerate(grouped_sessions):
-                self.logger.debug(f"Processing session {i+1}/{len(grouped_sessions)} for IP: {client_ip}")
-                try:
-                    session_features, _ = self.feature_extractor.extract_session_features(session_df, client_ip)
-                    if not session_features:
-                        continue
-
-                    anomaly_score = self.model_manager.detect(session_features)
-                    if anomaly_score is None:
-                        continue
-                    
-                    all_session_results.append({
-                        'client_ip': client_ip,
-                        'features': session_features,
-                        'anomaly_score': anomaly_score,
-                        'anomaly': -1 if anomaly_score > self.config.get('model', {}).get('threshold', 0.5) else 1
-                    })
-                    processed_sessions += 1
-                except Exception as e:
-                    self.logger.error(f"Failed to process session for IP {client_ip}: {e}", exc_info=True)
+                logger.debug(f"Processing session {i+1}/{len(grouped_sessions)} for IP: {client_ip}")
+                self._process_and_detect(session_df)
 
             run_summary['detection_stats'] = {
                 'sessions_processed_successfully': processed_sessions,
@@ -122,30 +123,163 @@ class TrafficDetector:
             }
 
             if not all_session_results:
-                self.logger.warning("No sessions were successfully processed.")
+                logger.warning("No sessions were successfully processed.")
                 self._log_summary(run_summary)
                 return {}
 
             # Step 4: Generate Report
             report_path = None
-            if self.config.get('visualization', {}).get('enable', True):
-                self.logger.info("Generating report...")
+            if self.config['visualization']['enable']:
+                logger.info("Generating report...")
                 results_df = pd.DataFrame([r['features'] for r in all_session_results])
                 anomalies = [res for res in all_session_results if res.get('anomaly') == -1]
                 report_name = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 report_path = self.visualizer.generate_report(results_df, anomalies, report_name, run_summary)
-                self.logger.info(f"Report generated at: {report_path}")
+                logger.info(f"Report generated at: {report_path}")
             
             results = {'session_results': all_session_results, 'report_path': report_path, 'run_summary': run_summary}
-            self.logger.info("Analysis completed successfully.")
+            logger.info("Analysis completed successfully.")
 
         except Exception as e:
-            self.logger.error(f"A fatal error occurred: {e}", exc_info=True)
+            logger.error(f"A fatal error occurred: {e}", exc_info=True)
             run_summary['error'] = str(e)
             results['error'] = str(e)
         
         self._log_summary(run_summary)
         return results
+
+    def _process_and_detect(self, session_df):
+        # 从session_df中提取client_ip (即源IP)
+        if session_df.empty:
+            logger.warning("Cannot process empty session DataFrame.")
+            return
+        
+        # 假设session_df按源IP分组，所有行都是同一个client_ip
+        try:
+            if hasattr(session_df['src_ip'], 'iloc'):
+                client_ip = session_df['src_ip'].iloc[0]
+            else:
+                client_ip = str(session_df['src_ip'])
+            logger.debug(f"Processing session for client IP: {client_ip}")
+        except Exception as e:
+            logger.error(f"Error extracting client IP: {e}")
+            client_ip = "unknown"
+            logger.debug(f"Using default client IP: {client_ip}")
+        
+        # 传递client_ip参数给extract_session_features
+        features, _ = self.feature_extractor.extract_session_features(session_df, client_ip)
+        if features is None:
+            return
+
+        # 检查特征类型并转换为DataFrame
+        if isinstance(features, dict):
+            logger.debug(f"Extracted features for detection (dict): {len(features)} features")
+            logger.trace(f"Features content: {features}")
+            
+            # 将字典转换为DataFrame，因为ModelManager中的预测方法期期DataFrame
+            import pandas as pd
+            features_df = pd.DataFrame([features])
+            logger.debug(f"Converted features dict to DataFrame with shape {features_df.shape}")
+        else:
+            # 如果已经是DataFrame，直接使用
+            features_df = features
+            logger.debug(f"Using existing DataFrame with shape {features_df.shape if hasattr(features_df, 'shape') else 'unknown'}")
+        
+        logger.trace(f"Features DataFrame content:\n{features_df}")
+        
+        scores, results = self.model_manager.detect(features_df, self.sequence_builder)
+
+        if scores is None:
+            logger.info("Detection yielded no result (e.g., not enough sequence data).")
+            return
+
+        score = scores[0]
+        result_type = results[0]
+        
+        # 获取client_ip时增加类型兼容性处理
+        try:
+            if hasattr(features['client_ip'], 'iloc'):
+                client_ip = features['client_ip'].iloc[0]
+            else:
+                client_ip = str(features['client_ip'])
+        except Exception as e:
+            logger.error(f"Error extracting client IP for result: {e}")
+            client_ip = "unknown"
+
+        if result_type == 'isolation_forest_high_risk':
+            logger.critical(f"HIGH RISK ANOMALY | IP: {client_ip} | Score: {score:.2f} | Reason: Static feature anomaly detected by Isolation Forest.")
+        elif result_type == 'lstm_sequence_anomaly':
+            logger.critical(f"CRITICAL ANOMALY | IP: {client_ip} | Score: {score:.4f} | Reason: Behavioral sequence anomaly confirmed by LSTM.")
+        elif result_type == 'normal':
+            logger.info(f"Normal traffic | IP: {client_ip} | IF Score: {score:.2f}")
+        elif result_type == 'isolation_forest' or result_type == 'lstm_autoencoder':
+            # Handle single-model mode detection results
+            logger.warning(f"Anomaly detected | IP: {client_ip} | Score: {score:.4f} | Model: {result_type}")
+        else:
+            logger.info(f"Detection result: {result_type} for IP {client_ip}")
+
+    def _ensure_model_is_ready(self):
+        try:
+            logger.debug("Starting _ensure_model_is_ready method...")
+            if not self.model_manager.load_model():
+                logger.warning("Failed to load one or more pre-trained models. Checking for training data.")
+                
+                logger.debug(f"Config type: {type(self.config)}")
+                logger.debug(f"Config has 'model' attribute: {hasattr(self.config, 'model')}")
+                logger.debug(f"Config.model has 'train' attribute: {hasattr(self.config.model, 'train') if hasattr(self.config, 'model') else False}")
+                
+                training_data_path = self.config.model.train.dataset
+                logger.debug(f"Training data path: {training_data_path}")
+                
+                if not Path(training_data_path).exists():
+                    # 如果训练数据不存在，尝试从当前处理的会话数据生成
+                    logger.info(f"Training data not found at {training_data_path}. Generating from processed sessions...")
+                    
+                    # 确保目录存在
+                    os.makedirs(os.path.dirname(training_data_path), exist_ok=True)
+                    logger.debug(f"Created directory: {os.path.dirname(training_data_path)}")
+                    
+                    if hasattr(self, 'sessions') and self.sessions and len(self.sessions) > 0:
+                        # 从当前会话数据中提取特征
+                        logger.info(f"Exporting features from {len(self.sessions)} processed sessions...")
+                        features_list = []
+                        
+                        for session in self.sessions:
+                            # 只提取数值特征，跳过非数值字段
+                            feature_dict = {}
+                            for key, value in session.items():
+                                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                                    feature_dict[key] = value
+                            
+                            features_list.append(feature_dict)
+                        
+                        if not features_list:
+                            raise ValueError("No numeric features found in processed sessions for training.")
+                        
+                        # 创建DataFrame并保存为CSV
+                        training_df = pd.DataFrame(features_list)
+                        training_df.to_csv(training_data_path, index=False)
+                        logger.info(f"Generated training dataset with {len(training_df)} samples and saved to {training_data_path}")
+                    else:
+                        raise FileNotFoundError("No processed sessions available to generate training data. Please process data first.")
+                
+                logger.info(f"Loading training data from {training_data_path}...")
+                training_df = pd.read_csv(training_data_path)
+                
+                # 选择数值特征用于训练
+                numeric_features = training_df.select_dtypes(include='number')
+                logger.info(f"Selected {numeric_features.shape[1]} numeric features for training.")
+                
+                # 训练模型
+                self.model_manager.train_model_if_needed(numeric_features)
+            else:
+                logger.info("All required models loaded successfully. Ready for detection.")
+        except Exception as e:
+            logger.error(f"Error in _ensure_model_is_ready: {e}")
+            # 打印更详细的异常信息以便调试
+            import traceback
+            logger.debug(f"Exception traceback: {traceback.format_exc()}")
+            raise
 
     def _log_summary(self, summary: Dict[str, Any]):
         """Logs a formatted summary of the processing run."""
@@ -174,42 +308,7 @@ class TrafficDetector:
             log_message += f"  - A fatal error occurred: {summary['error']}\n"
 
         log_message += "\n" + "="*60 + "\n"
-        self.logger.info(log_message)
-
-    def _ensure_model_is_ready(self, data_for_training: pd.DataFrame):
-        """Checks if a model is loaded, and trains one if not."""
-        train_config = self.config.get('model', {}).get('train', {})
-        if not train_config.get('force_retrain', False) and self.model_manager.load_model():
-            self.logger.info("Successfully loaded existing model.")
-            return
-        
-        self.logger.info("Training a new model...")
-        try:
-            self.logger.info("Extracting features for training...")
-            session_key = 'src_ip'
-            if session_key not in data_for_training.columns:
-                raise RuntimeError(f"Session key '{session_key}' not found in training data.")
-
-            all_features = []
-            for client_ip, session_df in data_for_training.groupby(session_key):
-                session_features, _ = self.feature_extractor.extract_session_features(session_df, client_ip)
-                if session_features:
-                    all_features.append(pd.DataFrame([session_features]))
-
-            if not all_features:
-                raise RuntimeError("Feature extraction yielded no data for training.")
-
-            features = pd.concat(all_features, ignore_index=True)
-            if features.empty:
-                raise RuntimeError("Feature extraction yielded no data.")
-
-            self.logger.info(f"Training model with {len(features)} records...")
-            self.model_manager.train(features)
-            self.logger.info("Model training completed.")
-
-        except Exception as e:
-            self.logger.error(f"Failed to train model: {e}", exc_info=True)
-            raise RuntimeError("Model training failed") from e
+        logger.info(log_message)
 
 # This file defines the main application class. 
 # The command-line entry point is now in cli.py.

@@ -3,11 +3,11 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
-
 import yaml
 from loguru import logger
+from box import Box
 
-def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+def load_config(config_path: Optional[str] = None) -> Box:
     """Load configuration from a YAML file.
     
     Args:
@@ -42,7 +42,10 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     # Validate and fix configuration
     config = _validate_and_fix_config(config)
     
-    return config
+    # Convert to Box for dot notation access
+    box_config = Box(config)
+    
+    return box_config
 
 def _validate_and_fix_config(config: Dict[str, Any]) -> Dict[str, Any]:
     """Validate configuration and apply fixes for common issues.
@@ -77,14 +80,33 @@ def _validate_and_fix_config(config: Dict[str, Any]) -> Dict[str, Any]:
     
     # Validate model configuration
     model_config = config.get('model', {})
-    if 'type' not in model_config:
-        logger.warning("Model type not specified, defaulting to 'isolation_forest'")
-        model_config['type'] = 'isolation_forest'
-    
-    # Ensure params is a dict
-    if 'params' not in model_config or not isinstance(model_config['params'], dict):
-        logger.warning("Model params not properly configured, using defaults")
-        model_config['params'] = {'contamination': 0.05, 'random_state': 42}
+    if 'detection_mode' not in model_config:
+        # Legacy mode: validate model type and params directly under 'model'
+        if 'type' not in model_config:
+            logger.warning("Model type not specified, defaulting to 'isolation_forest'")
+            model_config['type'] = 'isolation_forest'
+        
+        if 'params' not in model_config or not isinstance(model_config.get('params'), dict):
+            logger.warning("Legacy model params not properly configured, using defaults.")
+            model_config['params'] = {'contamination': 0.05, 'random_state': 42}
+    else:
+        # New mode: validate based on detection_mode
+        mode = model_config['detection_mode']
+        if mode not in ['isolation_forest', 'lstm_autoencoder', 'collaborative']:
+            logger.error(f"Invalid detection_mode '{mode}'. Must be one of: isolation_forest, lstm_autoencoder, collaborative.")
+            # Fallback or raise error
+            model_config['detection_mode'] = 'isolation_forest'
+
+        if mode == 'collaborative':
+            if 'collaborative' not in model_config or 'params' not in model_config.get('collaborative', {}):
+                logger.warning("Collaborative mode selected but params are missing. Using default thresholds.")
+                if 'collaborative' not in model_config:
+                    model_config['collaborative'] = {}
+                model_config['collaborative']['params'] = {
+                    'high_risk_threshold': 0.7,
+                    'suspicious_threshold': 0.5,
+                    'lstm_anomaly_threshold': 0.6
+                }
     
     # Validate data source
     data_config = config.get('data', {})

@@ -39,7 +39,7 @@ pip install -e .
 pip install -r requirements.txt
 ```
 
-### 1.2. 项目愿景与目标
+## 2. 项目愿景与目标
 
 本文档概述了重构后的流量异常检测系统的设计、架构和开发路线图。该项目的主要目标是创建一个健壮、模块化和可扩展的平台，用于分析网络流量数据（PCAP 文件）以识别异常。
 
@@ -51,11 +51,19 @@ pip install -r requirements.txt
 - **效率**：实现高效的数据处理，例如将 IP 地址转换为整数以加快处理速度并减少存储空间。
 - **可复现性**：通过集中配置和版本化模型，确保分析流程是可配置和可重复的。
 
-## 2. 系统架构
+## 3. 系统架构
 
 该系统基于标准的机器学习流水线架构设计，每个阶段都封装在自己的模块中。`main.py` 作为中央协调器，协调模块之间的数据流，而 `cli.py` 提供用户友好的命令行界面。
 
-### 2.0 数据源
+### 3.1 顶层架构概览
+[系统整体架构图]
+系统由四大核心层构成，形成一个从原始数据到智能决策的单向流水线：
+数据采集与标准化层
+特征工程与画像层
+双引擎AI检测层
+告警与可视化层
+
+### 3.2 数据源
 
 系统支持多种数据源，包括：
 - **PCAP 文件**：传统的网络数据包捕获文件
@@ -65,7 +73,7 @@ pip install -r requirements.txt
   - 自动解析 Arkime 的会话元数据和协议字段
   - 独立的数据收集和处理流程，与PCAP处理解耦
 
-### 2.1. 目录结构
+### 3.3 目录结构
 
 该项目遵循标准的 Python 源代码布局，以便更好地打包和分发：
 
@@ -91,26 +99,29 @@ flowed/
 │       ├── cli.py             # 命令行接口
 │       ├── main.py            # 主协调器
 │       ├── data/              # 数据收集与处理
+│       │   ├── sequence_builder.py # 新增：序列构建器
 │       │   └── processors/    # 数据处理器
 │       │       ├── base_processor.py
 │       │       └── pcap_processor.py
 │       ├── features/          # 特征工程
 │       │   ├── extractor.py   # 特征提取主类
-│       │   └── calculators/   # 特征计算器
+│       │   └── calculators/   # 特征计算器 (分层)
 │       │       ├── base_calculator.py
-│       │       ├── packet_calculator.py
-│       │       ├── flow_calculator.py
-│       │       ├── host_calculator.py
-│       │       └── protocol_calculators/  # 协议特定计算器
-│       │           ├── dns_calculator.py
-│       │           ├── http_calculator.py
-│       │           ├── ssh_calculator.py
-│       │           └── tls_calculator.py
+│       │       ├── packet_calculator.py  # L1: 解码TCP标志等
+│       │       ├── flow_calculator.py    # L2: 计算单向流统计
+│       │       ├── session_calculator.py # L2: 聚合双向流为会话
+│       │       ├── host_calculator.py    # L3: 计算主机时间窗口行为
+│       │       ├── profile_comparison_calculator.py # L3: 计算与历史画像的对比特征
+│       │       └── protocol_calculators/ # L2: 应用层协议解析
 │       ├── models/            # 异常检测模型
 │       │   ├── __init__.py
 │       │   ├── base_model.py  # 模型基类
 │       │   ├── isolation_forest.py  # 隔离森林实现
+│       │   ├── lstm_autoencoder.py # 新增：LSTM模型实现
 │       │   └── model_manager.py     # 模型管理
+│       ├── profiles/            # 新增：个体画像管理模块
+│       │   ├── profile_store.py   # 新增：画像存储与访问
+│       │   └── profile_updater.py # 新增：画像异步更新器
 │       ├── utils/             # 工具函数
 │       │   ├── config.py      # 配置管理
 │       │   └── logger.py      # 日志配置
@@ -126,26 +137,150 @@ flowed/
 ├── requirements.txt
 └── setup.py
 ```
+### 3.4 高层数据处理流程
+收集 (Collect)：DataCollector 识别原始数据文件。
+摄取与标准化 (Ingest & Standardize)：DataIngestor 选择合适的 Processor 将原始数据转换为标准格式的DataFrame (L1特征)。
+富化与特征提取 (Enrich & Extract)：FeatureExtractor 协调所有 Calculator，逐层计算 L2 和 L3 特征，并与 ProfileStore 交互。
+检测 (Detect)：ModelManager 使用双引擎模型对特征数据进行评分。
+可视化 (Visualize)：ResultVisualizer 生成分析报告。
 
-## 3. 模块详解
+### 3.5. 双引擎协作模式：分层过滤安检 (Layered Filtering Security Check)
 
-### 3.1. `main.py`: 协调器
+进入系统的每一笔流量（会话），都必须通过两道安检。第一道安检快速、高效，负责处理绝大部分流量；第二道安检则对少数“可疑”流量进行更深入、更细致的盘查。
+
+#### 第一道安检：快速安检通道 (The Fast Lane Security Check)
+
+- **安检员**: “巡警” - **孤立森林 (Isolation Forest)**
+- **检查工具**: X光机。它能快速扫描旅客的行李（会话的静态特征向量），发现明显违禁品。
+
+**工作流程**:
+
+1.  **输入**: 一个刚刚结束的会话，已经被`FeatureExtractor`处理成了一个包含L2+L3所有特征的、扁平化的特征向量。
+2.  **检查**: 孤立森林模型对这个向量进行快速评分。它寻找的是那些**“一眼看上去就不对劲”**的特征。
+3.  **判断与分流**:
+    - **红色警报 (High Alert)**: 如果分数远超高风险阈值（例如，得分 > 0.7）。
+        - **原因**: 这相当于X光机直接扫出了行李里有一把“大砍刀”——特征值极其异常，比如`src_host_distinct_dst_ports_win = 10000`（端口扫描）或`packets_per_second = 50000`（DDoS）。
+        - **动作**: 立即告警，无需复查！ `ModelManager`直接将这个高风险事件发送到告警层，安检流程结束。
+    - **绿色通行 (Passed)**: 如果分数很低，完全正常。
+        - **原因**: 行李里什么都没有，特征向量完全符合“正常”模式。
+        - **动作**: 旅客正常通过。`ModelManager`将这个会话标记为正常，但会静默地将它的特征向量发送给`SequenceBuilder`，用于更新该旅客（IP）的历史行为档案。
+    - **黄色标记 (Suspicious)**: 如果分数处于一个“可疑”的灰色地带（例如，0.5 < 得分 <= 0.7）。
+        - **原因**: X光机扫出了一个“形状可疑的金属物体”，但无法确定是不是违禁品。特征向量有一些不太常见的组合，但又没有极端到可以直接判定为攻击。
+        - **动作**: 引导至第二道安检进行人工复查！ `ModelManager`将这个事件和它的特征向量，传递给下一阶段。
+
+#### 第二道安检：人工详细检查室 (The Detailed Manual Inspection Room)
+
+- **安检员**: “侦探” - **LSTM自编码器 (LSTM Autoencoder)**
+- **检查工具**: 开箱检查 + 行为问询。侦探不仅要看这个旅客当前的行李，更重要的是，他会调取该旅客最近一段时间内所有的安检记录（行为序列），并询问他：“你从哪里来？要去哪里？为什么你的行程路线这么奇怪？”
+
+**工作流程**:
+
+1.  **输入**:
+    - 来自第一道安检的“黄色标记”事件。
+    - `ModelManager`调用`SequenceBuilder`，获取该旅客（客户端IP）最新的、包含了当前这次可疑行为的、完整的行为序列（例如，最近20次会话的特征向量序列）。
+2.  **检查**: LSTM自编码器“阅读”这整个行为序列。它利用自己学到的海量“正常旅客行程模式”，来判断这个旅客的**“行程剧本”**是否合乎逻辑。
+3.  **判断与最终决策**:
+    - **红色警报 (Critical Alert)**: 如果LSTM的重构误差非常高，远超其自身的异常阈值。
+        - **原因**: 侦探发现这个旅客的“故事”讲不通。例如，“他说他只是来旅游，但他先去了电厂，又去了水坝，最后出现在银行金库门口，这不符合任何正常游客的逻辑！”（业务逻辑滥用）；或者，“他每隔5分钟就以完全相同的姿势敬个礼，持续了24小时”（C2心跳）。
+        - **动作**: 确认威胁，立即告警！ `ModelManager`生成一个更高级别的“序列异常”告警，并附上LSTM的分析结果。
+    - **绿色放行 (Cleared)**: 如果LSTM的重构误差很低。
+        - **原因**: 侦探发现虽然他这次行李里有个奇怪的金属物体，但他之前的行程都非常正常，并且这次也能给出合理解释。这个行为序列的“语法”是通顺的。
+        - **动作**: 解除嫌疑，正常放行。 `ModelManager`最终将该事件判定为正常。
+
+#### 协作流程总结
+
+这个双引擎协作流程，可以用以下伪代码在`ModelManager`中清晰地表达出来：
+
+```python
+function collaborative_predict(feature_vector):
+    # 第一层：快速筛选
+    iso_forest_score = isolation_forest.predict_score(feature_vector)
+    
+    # 对于所有通过初筛的流量，都更新其行为序列
+    client_ip = feature_vector['client_ip']
+    sequence_builder.update_sequence(client_ip, feature_vector)
+
+    # 第二层：仅对可疑流量进行深度分析
+    if iso_forest_score > SUSPICIOUS_THRESHOLD:
+        
+        # 获取完整的行为序列
+        sequence = sequence_builder.get_sequence(client_ip)
+        
+        if sequence is long_enough:
+            lstm_score = lstm_autoencoder.predict_score(sequence)
+            
+            if lstm_score > LSTM_ANOMALY_THRESHOLD:
+                return create_alert("Critical", "LSTM", "Behavioral sequence anomaly")
+
+    # 如果所有检查都通过
+    return mark_as_normal(iso_forest_score)
+```
+
+#### 核心优势
+
+- **高效**: 绝大部分流量都被快速的孤立森林处理了，避免了对所有流量都进行昂贵的LSTM分析。
+- **精准**: 对于那些孤立森林难以判断的、更狡猾的攻击，我们有专门的“侦探”LSTM来进行深度调查，从而降低误报，并发现隐藏的威胁。
+- **互补**: 孤立森林擅长发现**“静态”和“突变”的异常，而LSTM擅长发现“动态”和“时序”**的异常，两者能力完美互补，覆盖了更广的攻击面。
+
+
+## 4. 模块详解 
+
+### 4.1. 数据采集与标准化
+
+*本章节整合所有与“获取原始数据并将其标准化”相关的内容。*
+#### 4.1.1 核心组件
+
+ - DataIngestor: 数据摄取的统一入口，动态选择解析器。
+ - PcapProcessor: 使用 pyshark 将PCAP文件解析为包含L1协议字段的DataFrame。
+#### 4.1.2. 协议解析能力 (L1 特征提取)
+ PcapProcessor 负责将原始数据包转化为结构化信息，提取以下关键协议字段：
+ - TCP: tcp.flags, tcp.srcport, tcp.dstport, tcp.seq, tcp.ack 等。
+ - HTTP: http.request.method, http.request.uri, http.user_agent, http.host, http.response.code 等。
+ - DNS: dns.qry.name, dns.qry.type, dns.flags.rcode 等。
+ - TLS/SSL: 从Client Hello消息中提取字段，用于计算 JA3 指纹。
+ - 其他: SSH版本信息, TDS (SQL) 查询语句等。
+
+### 4.2. 特征工程：从数据到洞察
+
+这是系统的核心技术章节，整合所有与“将标准化数据转化为模型输入”相关的内容。
+
+### 4.2.1 核心概念定义
+
+ - 流 (Flow): 指网络中具有相同五元组（源IP、源端口、目的IP、目的端口、协议）的单向数据包序列。
+ - 会话 (Session): 指两个端点之间的一个完整的、双向的逻辑通信。它由一个或多个相关的流组成。
+ - 主机 (Host): 指网络中的一个设备，通过其IP地址进行标识。
+
+ ### 4.2.2. FeatureExtractor: 特征提取协调器
+
+
+1. FeatureExtractor 是特征工程模块的核心，它不亲自执行计算，而是像一个总指挥，按逻辑顺序调用一系列专门的“特征计算器” (Calculator)，实现从原始数据到高级上下文特征的逐层聚合。
+2. 特征提取黄金流程 (Golden Pipeline):
+3. 调用 PacketCalculator (L1): 解码TCP标志位等基础意图。
+4. 调用 FlowCalculator (L2): 聚合数据包为单向流，计算流级统计特征。
+5. 调用 ProtocolCalculators (L2): 对特定协议载荷进行深度解析，提取应用层特征。
+6. 调用 SessionCalculator (L2): 聚合相关流为双向会话，计算会话级整体统计特征。
+7. 调用 HostCalculator (L3): 在时间窗口内聚合会话，计算主机的宏观行为特征。
+8. 调用 ProfileComparisonCalculator (L3): 从 ProfileStore 获取历史画像，对比当前行为，生成最终的“偏差”特征。
+
+## 4.3 模块详解
+
+### 4.3.1. `main.py`: 协调器
 - **职责**：包含 `TrafficDetector` 类，该类初始化所有组件并执行端到端的分析流水线。
 - **设计**：它不处理任何命令行解析。它由 `cli.py` 实例化和驱动。其主要方法 `run()` 按顺序调用收集器、处理器、提取器、检测器和可视化器。
 
-### 3.2. `cli.py`: 命令行界面
+### 4.3.2. `cli.py`: 命令行界面
 - **职责**：为从命令行运行应用程序提供用户友好的入口点。
 - **设计**：它使用 `argparse` 来处理命令行参数（例如 `--train`）。它实例化并运行 `main.py` 中的 `TrafficDetector`。
 
-### 3.3. `utils/config.py`: 配置管理
+### 4.3.3. `utils/config.py`: 配置管理
 - **职责**：加载、合并和提供对 YAML 配置文件中配置设置的访问。
 - **设计**：`Config` 类加载默认配置，并可以使用用户提供的文件覆盖它。这使得可以轻松管理文件路径、模型设置和功能标志等参数。
 
-### 3.4. `data/collector.py`: 数据收集
+### 4.3.4. `data/collector.py`: 数据收集
 - **职责**：查找并收集用于处理的原始数据文件（PCAP）。
 - **设计**：`DataCollector` 类扫描指定目录（`data/raw/`）以查找 PCAP 文件，并返回其路径列表。
 
-### 3.5. `data/`: 统一数据摄取层
+### 4.3.5.  `data/`: 统一数据摄取层
 为了支持多种数据源并标准化处理流程，数据处理模块被重构为一个统一的数据摄取层。
 
 - **`data/ingestor.py`**: `DataIngestor` 是数据摄取的入口。它会根据文件类型或配置，动态选择合适的解析器（Processor）来处理原始数据。
@@ -162,16 +297,16 @@ flowed/
 
 - **未来扩展**: 要支持新的数据源（如 NetFlow），只需在 `processors` 目录下创建一个新的解析器文件（如 `netflow_processor.py`），实现 `BaseProcessor` 接口即可。`DataIngestor` 可以自动发现并使用它。
 
-### 3.6. 特征工程
+### 4.4 特征工程
 
-#### 3.6.1 新增特征字段
+#### 4.4.1 新增特征字段
 
-##### 3.6.1.1 基础网络特征
+##### 4.4.1.1 基础网络特征
 - `flow_key`: 流的唯一标识符，格式为 `src_ip:src_port-dst_ip:dst_port`
 - `direction`: 流量方向（inbound/outbound）
 - `is_private_ip`: 标记是否为私有IP地址
 
-##### 3.6.1.2 会话级特征
+##### 4.4.1.2 会话级特征
 - `session_duration`: 会话持续时间（秒）
 - `total_packets`: 总数据包数
 - `total_bytes`: 总字节数
@@ -180,7 +315,7 @@ flowed/
 - `inbound_frame_len`: 入向数据包长度统计
 - `outbound_frame_len`: 出向数据包长度统计
 
-##### 3.6.1.3 TCP 特征
+##### 4.4.1.3 TCP 特征
 - `tcp_flag_syn`: SYN 标志位
 - `tcp_flag_ack`: ACK 标志位
 - `tcp_flag_fin`: FIN 标志位
@@ -188,7 +323,7 @@ flowed/
 - `tcp_flag_psh`: PSH 标志位
 - `tcp_flag_urg`: URG 标志位
 
-##### 3.6.1.4 RTT 和延迟特征
+##### 4.4.1.4 RTT 和延迟特征
 - `rtt_ms`: 往返时间（毫秒）
 - `rtt_ack_ms`: 基于ACK的RTT估计
 - `avg_rtt_ms`: 平均RTT
@@ -197,11 +332,71 @@ flowed/
 - `std_rtt_ms`: RTT标准差
 - `rtt_sample_count`: RTT样本数
 
-### 3.7 特征分层架构
+### 4.4.2. `FeatureExtractor`: 特征提取协调器
 
-本系统采用分层、模块化的特征提取架构，通过 `FeatureExtractor` 作为协调器，按顺序调用一系列可插拔的特征计算器。
+### 4.5. 核心概念定义
+- **流 (Flow)**: 指网络中具有相同五元组（源IP、源端口、目的IP、目的端口、协议）的单向数据包序列。
+- **会话 (Session)**: 指两个端点之间的一个完整的、双向的逻辑通信。它由一个或多个相关的流组成（例如，一个从A到B的流和一个从B到A的流）。
 
-#### 核心组件
+`FeatureExtractor` 是特征工程模块的核心，它不亲自执行计算，而是像一个总指挥，按逻辑顺序调用一系列专门的“特征计算器” (`Calculator`)，实现从原始数据到高级上下文特征的逐层聚合。这种设计使得特征集可以灵活扩展，只需添加新的计算器即可。
+
+**特征提取黄金流程 (Golden Pipeline):**
+
+`FeatureExtractor` 严格遵循以下顺序，确保每一层特征都建立在更基础的层之上：
+
+1.  **调用 `PacketCalculator` (L1)**: 对最原始的数据包进行分析，解码TCP标志位、IP选项等，为后续分析提供基础素材。
+2.  **调用 `FlowCalculator` (L2)**: 将数据包聚合成单向流（5元组），计算流级别的统计特征，如持续时间、包/字节速率等。
+3.  **调用 `SessionCalculator` (L2)**: 将相关的单向流（例如，客户端到服务器和服务器到客户端）聚合成一个双向会话，计算会话级的整体统计特征。
+4.  **调用 `ProtocolCalculators` (L2)**: 对特定协议（如HTTP, DNS）的载荷进行深度解析，提取应用层特征。
+5.  **调用 `HostCalculator` (L3)**: 在一个时间窗口内，聚合来自同一源/目的主机的所有会话，计算主机的行为特征，如会话创建频率、访问目标多样性等。
+6.  **调用 `ProfileComparisonCalculator` (L3)**: 这是特征提取的最后一步，也是最关键的一步。它从 `ProfileStore` 获取该主机的历史画像，并将其与当前计算出的会-话/主机特征进行对比，生成最终的L3“画像对比”特征（如 `is_new_uri_for_ip`, `is_unusual_hour_for_ip`）。
+
+通过这个流程，`FeatureExtractor` 最终为每个会话生成一个包含了从L1到L3所有信息的、丰富而立体的特征向量。
+
+**核心实现示例:**
+
+以下代码片段展示了`FeatureExtractor`如何与画像库及计算器协同工作，提取L2和L3特征：
+
+```python
+class FeatureExtractor:
+    def __init__(self, config: dict):
+        self.config = config
+        self.features_config = config.get('features', {})
+        self.enrichers = []
+        self.calculators = []
+        self._load_calculators()
+        
+    def extract_session_features(self, session_df: pd.DataFrame, client_ip: str):
+        """
+        提取会话级特征 (L2 + L3)
+        
+        Args:
+            session_df: 包含会话数据的DataFrame
+            client_ip: 客户端IP地址
+            
+        Returns:
+            tuple: (特征字典, 历史档案)
+        """
+        # 1. 计算L2特征
+        session_with_l2 = self._apply_l2_calculators(session_df)
+        
+        # 2. 获取历史档案
+        historical_profile = self.profile_store.get_profile(client_ip)
+        
+        # 3. 计算L3特征 (与历史档案对比)
+        l3_features = self.profile_comparison_calculator.calculate(
+            session_features=session_with_l2,
+            historical_profile=historical_profile
+        )
+        
+        # 4. 合并特征并更新档案
+        features = {**session_with_l2, **l3_features}
+        self.profile_store.update_profile(client_ip, session_with_l2)
+        
+        return features, historical_profile
+```
+
+#### 4.6 核心组件
 
 - **`features/extractor.py`**: 特征提取主类，负责：
   1. 数据预处理和标准化
@@ -234,7 +429,7 @@ flowed/
 
 1. **数据准备**：加载原始数据，进行基本清洗
 2. **包级特征**：提取单个数据包的特征
-3. **流级聚合**：按五元组（源/目的IP:端口+协议）聚合包特征
+3. **流级聚合**：按五元组（IP、端口、协议）聚合包特征
 4. **主机级聚合**：按源/目的IP聚合流特征
 5. **协议特定处理**：提取各应用层协议特有特征
 6. **特征合并**：将所有特征合并为统一的特征矩阵
@@ -248,7 +443,7 @@ flowed/
 
 - **未来扩展**: 添加新的特征类别（例如，针对特定应用层协议如DNS或HTTP的特征），只需在 `calculators` 目录下创建一个新的计算器类即可，无需修改现有逻辑。
 
-### 3.7. `enrichers/`: 数据富化层
+### 4.7. `enrichers/`: 数据富化层
 数据富化是提升检测能力的关键。本系统设计了一个可插拔的富化层，用于为 IP 地址等实体添加上下文信息。
 
 - **`enrichers/base_enricher.py`**: 定义了 `BaseEnricher` 抽象基类，所有具体的富化器都必须实现其 `enrich` 接口。
@@ -262,20 +457,55 @@ flowed/
 
 - **未来扩展**: 添加新的富化源只需在 `enrichers` 目录下创建一个新的富化器类并更新配置即可。
 
-### 3.8. `models/`: 模块化异常检测
+### 4.8. 高级分析层：个体画像与行为序列化
 
-为了提高可扩展性和可维护性，模型现在被设计为可插拔的模块。该架构的核心是 `ModelManager`，它负责根据配置动态加载和管理不同的异常检测算法。
+为了实现从“静态异常检测”到“上下文感知”的跨越，本系统引入了两个高级分析层：个体画像库和行为序列化器。
 
-**关键实现细节：**
-- **数据预处理**：在将数据送入模型训练 (`fit`) 和预测 (`predict`) 之前，`IsolationForestModel` 会执行严格的数据清理步骤。这包括：
-    1.  **选择数值特征**：自动筛选出数据帧中的所有数值类型列，忽略 `Timestamp`、字符串等非数值数据，解决了 `TypeError` 导致的崩溃问题。
-    2.  **处理无效值**：将无穷大 (`inf`) 和非数字 (`NaN`) 的值替换为 0，确保了输入给底层 `scikit-learn` 模型的数据是干净的，从而解决了先前由于无效数值导致的间歇性 C/Cython 层面崩溃（退出码 130）的问题。
+#### 4.8.1. `profiles/`: 动态客户端行为画像库
 
-### 3.9. 示例：从原始数据包到最终特征向量
+- **核心职责**: 作为系统的“长期记忆”，为每一个与服务交互的客户端IP建立并维护一个动态的行为档案。
+- **技术实现**:
+  - `profile_store.py`: `ProfileStore` 类负责与一个高性能键值存储（推荐使用 Redis，MVP阶段可使用内存字典）进行交互。它提供 `get_profile(ip)` 和 `update_profile(ip, data)` 等原子操作。
+  - `profile_updater.py`: 一个独立的后台服务或线程，负责异步、安全地将会话分析结果更新到画像库中，避免阻塞实时检测流程。
+- **画像内容**: 每个IP的画像是一个JSON对象，包含：
+  - **访问模式**: `set_of_accessed_uris`, `set_of_user_agents`, `set_of_ja3s`
+  - **时间模式**: `typical_hours_of_day` (分布向量)
+  - **流量模式**: `avg_bytes_per_session`, `max_bytes_observed`
+
+#### 4.8.2. `data/sequence_builder.py`: 行为序列构建器
+
+- **核心职责**: 将离散的会话事件，串联成能被LSTM模型理解的“行为电影”。
+- **工作流程**:
+  - `SequenceBuilder` 为每个客户端IP维护一个固定长度（例如，最近20次）的会话特征向量队列。
+  - 当一个新的会话特征向量产生时，它被推入对应IP的队列头部，最旧的向量则被移除。
+  - 当需要进行LSTM分析时，它会提供这个完整的、填充/截断好的、标准化的序列数据（3D张量）。
+
+### 4.9. `models/`: 双引擎异常检测架构
+
+系统采用创新的双引擎、分层过滤模型，以实现速度与深度的最佳平衡。`ModelManager` 负责协调两个引擎的工作。
+
+#### 引擎一: "巡警" - 孤立森林 (Isolation Forest)
+
+- **角色**: 快速、广泛的实时初筛器。负责处理所有流量，瞬间识别出特征值极端的“暴力”攻击和明显的行为偏差。
+- **输入**: L2+L3的扁平化特征向量。
+
+#### 引擎二: "侦探" - LSTM自编码器 (LSTM Autoencoder)
+
+- **角色**: 深度、上下文感知的序列分析器。专门用于分析通过初筛的、看似正常的流量，挖掘隐藏在操作顺序中的高级威胁。
+- **输入**: 由`SequenceBuilder`提供的会话特征向量序列 (3D张量)。
+
+#### 协作流程：分层过滤 (Layered Filtering)
+
+1.  **初筛**: `ModelManager` 首先将特征向量送入孤立森林。如果得分超过高风险阈值，则直接判定为异常并生成告警。
+2.  **序列构建**: 对于中低分事件，`ModelManager` 将其特征向量传递给 `SequenceBuilder`，更新对应IP的行为序列。
+3.  **深度分析**: `SequenceBuilder` 将更新后的序列提供给 LSTM模型。
+4.  **最终决策**: LSTM计算序列的重构误差。如果误差超过其自身的阈值，则生成一个更深层次的“序列异常”告警。
+
+### 4.10. 示例：从原始数据包到最终特征向量
 
 为了更具体地理解系统的数据处理流程，我们以一个简单的 TCP "三次握手" 过程为例，追踪数据从输入到输出的完整演变。
 
-#### 阶段 1: 初始数据摄取与协议解析
+#### 4.10.1 阶段 1: 初始数据摄取与协议解析
 
 数据首先由 `DataIngestor` 调用 `pcap_processor` 从 PCAP 文件中读取。`pcap_processor` 的核心职责是利用 `pyshark` 将原始、无结构的二进制数据包，解析成结构化的、包含丰富协议字段的 DataFrame。此时，DataFrame 的每一行代表一个数据包，每一列代表一个从包中提取出的关键字段。
 
@@ -554,272 +784,41 @@ DNS 是一个关键的攻击向量，常被用于数据泄露和 C&C 通信。�
 
 `ModelManager` 将自动发现并加载您的新模型，无需修改任何现有代码。
 
-### 3.9. `visualization/dashboard.py`: 报告
+### 4.9. `visualization/dashboard.py`: 报告
 - **职责**：生成易于人类阅读的分析结果报告。
 - **设计**：`ResultVisualizer` 类接收特征数据和预测，以创建摘要报告。目前，它生成一个简单的 HTML 报告，但可以扩展以使用 `matplotlib` 或 `plotly` 等库生成复杂的图表。
 
-## 4. 数据处理流程
+### 4.10. 数据处理流程
 
 端到端的数据流水线被设计为高度模块化和标准化的流程：
 
 1.  **收集 (Collect)**：`DataCollector` 识别 `data/raw/` 或其他指定位置的原始数据文件（如 PCAP, NetFlow CSV 等）。
 2.  **摄取与标准化 (Ingest & Standardize)**：`DataIngestor` 为每个原始文件选择合适的解析器（如 `PcapProcessor`）。解析器将原始数据转换为一个**标准格式的 DataFrame**，这个 DataFrame 是后续所有步骤的统一输入。
 3.  **富化与特征提取 (Enrich & Extract)**：`FeatureExtractor` 首先将标准化的 DataFrame 中的 IP 地址发送到数据富化层，获取地理位置、威胁情报等上下文信息。然后，它将这些新信息与原始数据结合，计算出最终用于模型训练和检测的特征集。
-4.  **检测 (Detect)**：`ModelManager` 使用加载的算法模型，在特征数据上进行训练或预测异常。
-5.  **可视化 (Visualize)**：`ResultVisualizer` 使用特征和预测结果生成分析报告。
+5.  **检测 (Detect)**：`ModelManager` 使用加载的算法模型，在特征数据上进行训练或预测异常。
+6.  **可视化 (Visualize)**：`ResultVisualizer` 使用特征和预测结果生成分析报告。
 
-## 5. 异常检测模型
 
-### 5.1 模型架构
-
-系统采用模块化设计，支持多种异常检测算法。当前实现基于 **Isolation Forest** 算法，适用于高维数据的异常检测。
-
-#### 核心组件
-
-- **`models/base_model.py`**: 定义模型接口
-  - `train()`: 训练模型
-  - `predict()`: 预测异常
-  - `save()`/`load()`: 模型持久化
-  - `evaluate()`: 模型评估
-
-- **`models/isolation_forest.py`**: 隔离森林实现
-  - 支持自定义参数调优
-  - 特征重要性分析
-  - 异常分数归一化
-
-- **`models/model_manager.py`**: 模型管理
-  - 模型生命周期管理
-  - 模型版本控制
-  - 自动选择最优模型
-
-### 5.2 模型训练
-
-1. **数据准备**
-   - 特征标准化
-   - 处理类别特征
-   - 处理缺失值
-
-2. **训练流程**
-   - 交叉验证
-   - 超参数调优
-   - 早停机制
-
-3. **模型评估**
-   - 准确率/召回率
-   - ROC/AUC 曲线
-   - 混淆矩阵
-
-### 5.3 模型部署
-
-- 支持批量预测和实时预测
-- 模型热更新
-- 性能监控
-
-## 6. 可视化系统
-
-### 6.1 报告生成
-
-- **`visualization/dashboard.py`**: 生成交互式HTML报告
-  - 流量概览
-  - 异常检测结果
-  - 交互式图表
-
-### 6.2 可视化组件
-
-1. **Sankey 图**
-   - 展示主机间流量
-   - 突出异常连接
-
-2. **协议玫瑰图**
-   - 协议分布分析
-   - 异常协议检测
-
-3. **时间序列分析**
-   - 流量模式
-   - 异常时间点检测
-
-### 6.3 交互功能
-
-- 图表缩放/平移
-- 数据筛选
-- 工具提示
-- 图表联动
-
-## 7. 配置系统
-
-### 7.1 配置文件结构
-
-- **`config/default.yaml`**: 默认配置
-  - 数据路径
-  - 模型参数
-  - 特征选择
-  - 日志设置
-
-### 7.2 配置覆盖
-
-- 支持环境变量覆盖
-- 命令行参数优先
-- 配置验证
-
-## 8. 性能优化
-
-### 8.1 数据处理优化
-- 内存映射
-- 分块处理
-- 并行计算
-
-### 8.2 计算优化
-- 向量化操作
-- 多进程/多线程
-- 延迟加载
-
-## 9. 部署指南
-
-### 9.1 环境准备
-- Python 3.8+
-- 依赖安装
-- 配置设置
-
-### 9.2 运行方式
-
-```bash
-# 开发模式
-python -m flowed.cli --config config/default.yaml --debug
-
-# 生产模式
-python -m flowed.cli --config /path/to/config.yaml
-```
-
-### 9.3 监控与维护
-- 日志轮转
-- 资源监控
-- 告警设置
-
-### 5.1 模型管理架构
-
-模型管理系统采用分层架构设计，包含以下核心组件：
-
-- **BaseModel 抽象基类**：定义所有模型必须实现的接口和方法
-- **具体模型实现**：如 IsolationForestModel 等具体算法实现
-- **ModelManager**：模型生命周期的中央管理器
-- **持久化层**：处理模型的保存、加载和版本控制
-
-### 5.2 核心功能
-
-#### 5.2.1 模型训练与评估
-
-- **训练指标记录**：自动记录训练过程中的关键指标
-- **特征重要性分析**：计算并记录各特征的贡献度
-- **训练过程可视化**：支持训练过程的可视化展示
-- **交叉验证**：内置交叉验证支持
-
-#### 5.2.2 模型持久化
-
-- **完整模型包**：保存模型权重、架构和训练配置
-- **训练指标**：保存训练过程中的评估指标
-- **特征重要性**：保存特征重要性分析结果
-- **元数据**：保存模型训练环境、超参数等信息
-
-#### 5.2.3 模型版本控制
-
-- **版本追踪**：自动追踪模型版本
-- **模型比较**：比较不同版本模型的性能
-- **模型回滚**：支持回滚到历史版本
-
-### 5.3 模型部署与推理
-
-- **统一推理接口**：提供一致的 predict 方法
-- **批量预测**：支持批量数据的高效推理
-- **实时预测**：支持单条数据的低延迟预测
-- **预测解释**：提供预测结果的解释性分析
-
-### 5.4 模型监控与维护
-
-- **性能监控**：监控模型在生产环境的性能
-- **数据漂移检测**：检测输入数据分布的变化
-- **模型再训练**：支持模型的增量训练和全量再训练
-
-## 6. 数据存储与管理策略
+### 9.5 数据存储与管理策略
 
 随着数据量的增长，有效的存储和管理至关重要。本系统规划了以下策略：
 
-### 5.1. 存储抽象层
+#### 9.5.1 存储抽象层
 - **设计**: 引入一个 `StorageManager` 类，作为统一的文件访问接口。所有模块（如 `DataIngestor`, `ModelManager`）都通过它来读写数据，而不是直接操作文件系统路径。
 - **优点**: 这种设计将核心逻辑与具体的存储实现（本地文件系统、云存储）解耦，使得未来切换或扩展存储后端变得容易。
 
-### 5.2. 可扩展的存储后端
+#### 9.5.2 可扩展的存储后端
 - **当前**: 默认使用本地文件系统，并将结构化数据存储为高效的 Parquet 格式。
 - **未来**: 计划通过 `StorageManager` 支持云存储后端（如 AWS S3, Google Cloud Storage）。用户将能够通过修改配置文件，无缝地将数据存储在云端，以获得更好的可扩展性、可靠性和成本效益。
 
-### 5.3. 数据生命周期管理
+#### 9.5.3 数据生命周期管理
 - **规划**: 在配置中增加数据保留策略（Data Retention Policy），允许系统自动清理或归档过期的数据。例如，可以配置自动删除超过30天的报告，或将超过90天的原始数据归档到低成本的“冷”存储中。
 
 ### 5.4. 数据溯源与版本控制
 - **挑战**: 确保分析结果的可复现性，需要追踪数据、代码和模型之间的关系。
 - **规划**: 预留接口，为未来集成元数据存储（如 SQLite 数据库）或专门的数据版本控制工具（如 DVC）做准备。这将记录每次运行的上下文信息（如代码版本、配置文件、输入数据哈希等），从而实现端到端的溯源。
 
-## 6. 开发与部署
 
-### 5.1. 安装
-
-使用提供的 `install.sh` 脚本设置开发环境。此脚本需要安装 `uv`。它使用 `uv` 在 `.venv/` 中创建虚拟环境并高速安装所有必需的依赖项。
-
-```bash
-# 从项目根目录
-./scripts/install.sh
-```
-
-### 5.2. 运行应用程序
-
-激活虚拟环境并使用 CLI 入口点。
-
-```bash
-source .venv/bin/activate
-# 使用默认设置运行
-python -m src.traffic_detect.cli
-
-# 强制重新训练模型
-python -m src.traffic_detect.cli --train
-```
-
-### 5.3. 运行测试
-
-使用 `run_tests.sh` 脚本执行所有单元和集成测试。
-
-```bash
-./scripts/run_tests.sh
-```
-
-## 7. 测试架构
-
-### 7.1 单元测试
-- **`tests/unit/test_collector.py`**: 测试数据收集功能
-- **`tests/unit/test_pcap_processor.py`**: 测试PCAP处理逻辑
-- **`tests/unit/test_arkime_collector.py`**: 测试Arkime数据收集
-- **`tests/unit/test_feature_calculators/`**: 测试各特征计算器
-  - `test_flow_calculator.py`
-  - `test_host_calculator.py`
-  - `test_packet_calculator.py`
-  - `test_rtt_calculator.py`
-  - `test_session_calculator.py`
-
-### 7.2 集成测试
-- **`tests/integration/test_pipeline.py`**: 测试端到端处理流程
-- **`tests/integration/test_arkime_integration.py`**: 测试Arkime集成
-
-### 7.3 测试数据
-- **`tests/data/`**: 包含用于测试的样本数据
-  - `sample.pcapng`: 小型PCAP文件用于单元测试
-  - `arkime_sample.json`: Arkime API响应示例
-
-## 8. 当前状态与已知问题
-
-- **间歇性崩溃 (退出码 130)**：尽管通过数据清理解决了模型训练阶段的稳定崩溃问题，但系统目前仍偶尔会遇到退出码为 130 的静默失败。这种崩溃似乎是间歇性的，并且发生在我们为报告添加自动解读功能之后。
-- **调试策略**：为了定位问题，我们当前的策略是暂时在配置文件中禁用报告生成功能 (`visualization.enable: false`)，以隔离问题源。如果禁用报告后系统能够稳定运行，则说明问题可能与报告生成模块的内存使用或其依赖有关。如果问题依旧，则根本原因仍在核心流程中。
-
-- **IP 地址富化失败**：日志显示，在调用 `ipregistry.co` API 时，由于 `NaN` 值导致了 JSON 序列化错误。这需要在将 IP 列表发送到富化器之前进行清理。
-
-- **Pandas FutureWarning**：在 `HostCalculator` 中存在一个关于链式赋值的 `FutureWarning`。虽然目前不影响功能，但应在未来版本中修复，以确保代码的健壮性。
 
 ## 8. Arkime 数据源集成
 
@@ -862,78 +861,47 @@ arkime:
 
 ## 9. 未来工作与路线图
 
-这个重构的架构为未来的增强功能提供了坚实的基础。以下是潜在的开发路线图：
+为了将新的双引擎架构从概念设计转化为可部署的系统，我们规划了以下分阶段的实施路径：
 
-- **高级特征工程**：
-    - 实现健壮的基于流的特征（例如，流持续时间、每流数据包数、每流字节数）。
-    - 添加基于特定协议信息的特征（例如，HTTP 请求类型、DNS 查询模式）。
-    - 结合时间序列特征（例如，滚动时间窗口内的活动）。
+#### 阶段一：基础建设与画像 MVP (Minimum Viable Product)
+*   **目标**: 搭建个体画像系统的基础，并将其作为 L3 特征融入现有检测流程。
+*   **关键任务**:
+    1.  **实现 `ProfileStore`**: 完成画像存储模块，初期可使用内存字典作为后端，以快速验证功能。
+    2.  **实现 `ProfileUpdater`**: 开发一个异步更新器，安全地将会话分析结果写入画像库，避免阻塞主检测流程。
+    3.  **集成 L3 特征**: 将画像对比结果（如 `is_new_uri_for_ip`）作为新的 L3 特征，输入给现有的孤立森林模型，初步提升其上下文感知能力。
+    4.  **单元测试**: 为 `profiles` 模块编写基础的单元测试，确保其稳定可靠。
 
-- **增强建模**：
-    - 实验不同的异常检测算法（例如，One-Class SVM、自动编码器）。
-    - 实现一个模型评估模块，以使用标记数据量化性能。
-    - 添加对在线/增量学习的支持，以便可以用新数据更新模型而无需完全重新训练。
+#### 阶段二：序列构建与 LSTM 集成
+*   **目标**: 引入 LSTM 引擎，实现从静态检测到序列分析的跨越。
+*   **关键任务**:
+    1.  **实现 `SequenceBuilder`**: 完成行为序列构建器，能够为每个 IP 维护一个固定长度的会话特征序列。
+    2.  **实现 `LSTMAutoencoder`**: 开发 LSTM 自编码器模型，包括其训练和预测逻辑。
+    3.  **改造 `ModelManager`**: 升级模型管理器，使其支持“孤立森林初筛 + LSTM 复核”的双引擎协作流程。
+    4.  **开发训练管道**: 为 LSTM 模型建立一个离线的训练、评估和调优管道。
 
-- **复杂的可视化**：
-    - 集成 `matplotlib`、`seaborn` 或 `plotly`，在 HTML 报告中创建交互式仪表板和图表。
-    - 添加特征分布和异常时间线的可视化。
+#### 阶段三：生产化与性能优化
+*   **目标**: 确保新架构的性能和稳定性，为部署到生产环境做准备。
+*   **关键任务**:
+    1.  **持久化 `ProfileStore`**: 将画像库的后端从内存字典迁移到高性能的键值存储（如 Redis），确保画像数据持久化且可扩展。
+    2.  **优化序列管理**: 对 `SequenceBuilder` 进行性能和内存优化，确保能高效处理大规模 IP 的序列数据。
+    3.  **监控与日志**: 为双引擎模型和画像库添加详细的监控指标和日志，以便于问题排查和性能调优。
+    4.  **模型版本控制**: 建立一套有效的模型版本管理和热更新机制。
 
-- **可伸缩性与性能**：
-    - 集成像 Dask 或 Spark 这样的分布式计算框架，用于处理非常大的数据集。
-    - 优化 PCAP 解析过程以获得更好的性能。
+#### 阶段四：高级功能与可解释性
+*   **目标**: 提升检测结果的可用性，并探索更前沿的分析技术。
+*   **关键任务**:
+    1.  **可视化序列异常**: 在分析报告中增加新的可视化模块，用于直观展示导致 LSTM 报警的异常行为序列。
+    2.  **增强可解释性 (XAI)**: 探索如 SHAP 或 LIME 等技术，尝试解释 LSTM 模型做出异常判断的关键特征和时间步，提升告警的可信度和可操作性。
+    3.  **特征迭代**: 基于在真实数据上的运行结果，持续迭代和优化为两个引擎输入的特征集。
 
-- **CI/CD 集成**：
-    - 设置持续集成流水线（例如，使用 GitHub Actions）以在每次提交时自动运行测试。
-    - 创建持续部署流水线以打包和发布应用程序。
+### 5. 会话分析与特征提取实现
 
-- **Arkime 集成增强**：
-    - 支持更多 Arkime 查询参数和过滤器
-    - 添加对 Arkime 认证和授权的完整支持
-    - 实现增量数据同步功能
-    - 添加对 Arkime SPI 视图的自定义字段映射
-
-- **跳转处理与完整会话跟踪**：
-    - 实现 HTTP 重定向链的自动跟踪与关联
-    - 支持代理和负载均衡环境下的会话追踪
-    - 添加对 NAT 环境中的地址转换跟踪
-    - 实现基于时间窗口的会话重组算法
-    - 添加对 WebSocket 等长连接协议的状态跟踪
-
-- **性能优化**：
-    - 实现流式处理大型 Arkime 结果集
-    - 添加查询结果缓存机制
-    - 优化内存使用，特别是在处理大型PCAP文件时
-
-## 4. 会话分析与特征提取
-
-### 4.1 会话定义与生命周期
-
-#### 4.1.1 基本概念
-- **会话(Session)**: 表示两个端点之间的逻辑通信序列，由五元组(源IP、源端口、目的IP、目的端口、协议)定义
-- **会话方向**: 根据源IP地址判断入站(inbound)或出站(outbound)流量
-- **会话超时**: 默认30秒无活动后认为会话结束
-- **会话键(Session Key)**: 使用`_get_session_key`方法生成，确保双向会话使用相同的键
-
-#### 4.1.2 代码实现
-```python
-# 会话键生成逻辑 (session_calculator.py)
-def _get_session_key(self, row: pd.Series) -> str:
-    src_ip = str(row.get('src_ip', ''))
-    dst_ip = str(row.get('dst_ip', ''))
-    src_port = str(row.get('src_port', ''))
-    dst_port = str(row.get('dst_port', ''))
-    protocol = str(row.get('protocol', ''))
-    
-    # 对IP和端口进行排序以确保双向会话使用相同的键
-    if src_ip < dst_ip or (src_ip == dst_ip and src_port <= dst_port):
-        return f"{src_ip}:{src_port}-{dst_ip}:{dst_port}-{protocol}"
-    else:
+#### 5.2.1 特征列表
         return f"{dst_ip}:{dst_port}-{src_ip}:{src_port}-{protocol}"
-```
 
-### 4.2 会话特征提取实现
+### 5. 会话分析与特征提取实现
 
-#### 4.2.1 特征列表
+#### 5.2.1 特征列表
 
 `SessionCalculator` 计算以下几类特征：
 
@@ -1010,45 +978,7 @@ def calculate(self, df: pd.DataFrame) -> pd.DataFrame:
 
 ### 4.3 特征提取管道
 
-#### 4.3.1 特征提取器 (FeatureExtractor)
-```python
-class FeatureExtractor:
-    def __init__(self, config: dict):
-        self.config = config
-        self.features_config = config.get('features', {})
-        self.enrichers = []
-        self.calculators = []
-        self._load_calculators()
-        
-    def extract_session_features(self, session_df: pd.DataFrame, client_ip: str):
-        """
-        提取会话级特征 (L2 + L3)
-        
-        Args:
-            session_df: 包含会话数据的DataFrame
-            client_ip: 客户端IP地址
-            
-        Returns:
-            tuple: (特征字典, 历史档案)
-        """
-        # 1. 计算L2特征
-        session_with_l2 = self._apply_l2_calculators(session_df)
-        
-        # 2. 获取历史档案
-        historical_profile = self.profile_store.get_profile(client_ip)
-        
-        # 3. 计算L3特征 (与历史档案对比)
-        l3_features = self.profile_comparison_calculator.calculate(
-            session_features=session_with_l2,
-            historical_profile=historical_profile
-        )
-        
-        # 4. 合并特征并更新档案
-        features = {**session_with_l2, **l3_features}
-        self.profile_store.update_profile(client_ip, session_with_l2)
-        
-        return features, historical_profile
-```
+
 
 ### 4.4 性能优化与扩展
 
@@ -1061,3 +991,24 @@ class FeatureExtractor:
 - **插件架构**: 支持动态加载特征计算器
 - **配置驱动**: 通过YAML配置调整特征提取参数
 - **可扩展性**: 易于添加新的特征类型和计算逻辑
+
+### 4.5. LSTM 输入特征字段
+
+为了让LSTM模型能有效地学习“行为语法”，其输入的序列特征向量应包含以下经过标准化处理的数值型字段：
+
+#### 第一梯队 (核心行为):
+- **流量统计**: `flow_duration_seconds`, `flow_pkt_count`, `flow_byte_count`, `flow_pkts_per_second`, `flow_bytes_per_second`
+- **方向性**: `flow_fwd_pkt_count`, `flow_bwd_pkt_count`, `session_bytes_ratio`
+- **时间动态**: `flow_iat_mean`, `flow_iat_stddev`
+- **包大小分布**: `flow_pkt_len_mean`, `flow_pkt_len_std`
+
+#### 第二梯队 (应用层上下文):
+- **HTTP**: `http_method_*` (独热编码后), `http_response_code_*` (独热编码后), `http_uri_length`, `http_uri_entropy`
+- **DNS**: `dns_query_length`, `dns_query_entropy`, `dns_qry_type_*` (独热编码后)
+- **TLS**: `tls_ja3` (经过频率编码或目标编码后的数值)
+
+#### 第三梯队 (个体画像对比):
+- `is_new_uri_for_ip` (转换为 0/1)
+- `is_unusual_hour_for_ip` (转换为 0/1)
+- `is_new_user_agent_for_ip` (转换为 0/1)
+- ... (其他所有L3对比特征)

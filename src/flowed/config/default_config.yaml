@@ -107,20 +107,56 @@ features:
 
 # Model configuration
 model:
-  type: "isolation_forest"  # isolation_forest, one_class_svm, lof
-  params:
-    contamination: 0.05  # More realistic proportion of outliers (5%)
-    n_estimators: 200    # Increase trees for better stability
-    max_samples: 0.8     # Use 80% of samples for each tree
-    random_state: 42
-    bootstrap: false     # Don't bootstrap samples
-    n_jobs: -1          # Use all available cores
+  # Defines the detection strategy. Options:
+  # 'isolation_forest': Use only the Isolation Forest model.
+  # 'lstm_autoencoder': Use only the LSTM Autoencoder model.
+  # 'collaborative': Use the layered filtering mode (Isolation Forest + LSTM).
+  detection_mode: isolation_forest
+
+  # Parameters for the collaborative detection mode
+  collaborative:
+    params:
+      # Isolation Forest score threshold to immediately flag as high risk.
+      high_risk_threshold: 0.75
+      # Isolation Forest score threshold to trigger secondary LSTM analysis.
+      suspicious_threshold: 0.6
+      # LSTM reconstruction error threshold to flag as a sequence anomaly.
+      lstm_anomaly_threshold: 0.8
+
   train:
-    test_size: 0.2
-    validation_split: 0.1  # Add validation set
-    min_samples: 1000      # Minimum samples required for training
-  save_dir: "data/models"
-  threshold: 0.9  # Anomaly score threshold
+    # This section now primarily controls model training behavior.
+    # For 'collaborative' mode, both models will be trained if needed.
+    # The 'type' field is kept for legacy single-model training runs but is ignored in 'collaborative' mode.
+    type: isolation_forest
+    # Path to training dataset (created from processed sessions if not exists)
+    dataset: "data/processed/training_data.csv"
+    params:
+      contamination: 0.05  # More realistic proportion of outliers (5%)
+      n_estimators: 200    # Increase trees for better stability
+      max_samples: 0.8     # Use 80% of samples for each tree
+      random_state: 42
+
+  # Configuration for the Isolation Forest model
+  isolation_forest:
+      n_jobs: -1          # Use all available cores
+    train:
+      test_size: 0.2
+      validation_split: 0.1  # Add validation set
+      min_samples: 1000      # Minimum samples required for training
+    threshold: 0.9  # Anomaly score threshold
+
+  # Configuration for the LSTM Autoencoder model
+  lstm_autoencoder:
+    params:
+      sequence_length: 50 # Number of sessions to form a sequence for LSTM analysis
+      encoding_dim: 32
+      epochs: 50
+      batch_size: 64
+      lstm_layers: 1
+      dropout_rate: 0.0
+
+  # Common settings
+  save_dir: "data/models/isolation_forest_model"
   performance_monitoring:
     enabled: true
     drift_detection: true

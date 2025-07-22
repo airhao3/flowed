@@ -91,8 +91,13 @@ class FeatureExtractor:
         # 5. Merge L2 and L3 features
         final_features = {**session_l2_features, **session_l3_features}
 
-        # 6. Update the profile with the latest session's L2 features
-        self.profile_store.update_profile(client_ip, session_l2_features)
+        # 6. Update the profile with the latest session info
+        # This step is crucial for the system to learn and evolve its understanding of the client.
+        self.profile_store.update_profile(client_ip, final_features)
+
+        self.logger.debug(f"Successfully extracted {len(final_features)} features for session from {client_ip}")
+
+        return final_features, historical_profile
         
         self.logger.success(f"Successfully extracted L2+L3 features for {client_ip}")
         return final_features, historical_profile
@@ -190,7 +195,8 @@ class FeatureExtractor:
                             self.logger.warning(f"Invalid config for calculator {calculator_key}: {calculator_config}")
                             calculator_config = {}
                         
-                        if calculator_config.get('enabled', False):
+                        # Only load if the calculator has an explicit config and is enabled
+                        if calculator_key in self.features_config.get('calculators', {}) and calculator_config.get('enabled', False):
                             self.logger.info(f"Loading calculator: {member_name}")
                             self.calculators.append(obj(calculator_config))
                         else:

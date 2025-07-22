@@ -62,17 +62,73 @@ Flowed 是一个基于 Python 的网络流量分析与异常检测系统，使�
    pip install -e .
    ```
 
-### 使用方法
+## 🖥️ Command Line Usage
 
-1. 准备 PCAP 文件到 `data/raw/` 目录
-2. 运行分析：
-   ```bash
-   python -m flowed.cli --config config/default.yaml
-   ```
-3. 查看报告：
-   ```
-   open data/reports/report_*.html
-   ```
+### Basic Commands
+
+#### Run Detection
+```bash
+# Basic detection with default config
+python -m flowed.cli detect
+
+# Specify custom config file
+python -m flowed.cli detect --config path/to/config.yaml
+
+# Enable verbose output
+python -m flowed.cli detect -v
+
+# Force model retraining
+python -m flowed.cli detect --force-retrain
+```
+
+#### Train Models
+```bash
+# Train new models
+python -m flowed.cli train --config config/default.yaml
+
+# Retrain existing models
+python -m flowed.cli retrain --config config/production.yaml
+```
+
+### Command Line Options
+
+| Option | Description |
+|--------|-------------|
+| `--config FILE` | Path to configuration YAML file (default: custom_config.yaml) |
+| `--source PATH` | Override data source path |
+| `--destination PATH` | Override output destination path |
+| `--log-level LEVEL` | Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
+| `-v, --verbose` | Enable verbose output (same as --log-level DEBUG) |
+| `--force-retrain` | Force retraining of models |
+| `--debug` | Enable debug mode with additional diagnostics |
+
+### Configuration File
+
+The configuration file (default: `custom_config.yaml`) allows you to customize:
+- Data source and output paths
+- Feature extraction parameters
+- Model hyperparameters
+- Logging settings
+- Visualization options
+
+Example minimal config:
+```yaml
+data:
+  source: data/raw/
+  destination: data/processed/
+
+model:
+  detection_mode: collaborative  # Options: isolation_forest, lstm_autoencoder, collaborative
+  save_dir: data/models/
+
+logging:
+  level: INFO
+  file: logs/flowed.log
+
+visualization:
+  enable: true
+  output_dir: data/reports/
+```
 
 ## 🛠 项目结构
 

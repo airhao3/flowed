@@ -39,7 +39,7 @@ class ProfileComparisonCalculator(BaseCalculator):
             l3_features['is_new_user_agent_for_ip'] = 0
 
         # --- Feature: Is this the first session for this IP? ---
-        l3_features['is_first_session_for_ip'] = 1 if historical_profile.get('session_count', 0) <= 1 else 0
+        l3_features['is_first_session_for_ip'] = 1 if historical_profile.get('session_count', 0) == 0 else 0
 
         # --- Time-based features ---
         now = datetime.datetime.now(datetime.timezone.utc)

@@ -36,10 +36,28 @@ features:
 
 # 异常检测模型配置
 model:
-  type: "isolation_forest"
-  params:
-    contamination: 0.05  # 预期异常比例（5%）
-    random_state: 42
+  # Switch to collaborative mode to test the new dual-engine pipeline
+  detection_mode: collaborative
+
+  # Override default thresholds if needed
+  collaborative:
+    params:
+      high_risk_threshold: 0.75
+      suspicious_threshold: 0.6
+      lstm_anomaly_threshold: 0.8
+
+  train:
+    type: "lstm_autoencoder" # Set model type to LSTM Autoencoder
+    dataset: "data/processed/training_data.csv"
+    force_retrain: true # Force retraining for testing
+  lstm_autoencoder:
+    params:
+      sequence_length: 50
+      encoding_dim: 32
+      epochs: 50
+      batch_size: 64
+      lstm_layers: 1
+      dropout_rate: 0.0
   save_dir: "data/models"
 
 # 可视化配置
